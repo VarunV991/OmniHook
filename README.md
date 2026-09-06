@@ -2,7 +2,7 @@
 
 Capture, verify, replay webhooks locally. No account. Data stays in your SQLite file.
 
-> Status: `v0.1.0` — runnable single binary. See [PLAN.md](PLAN.md) for scope and [CHANGELOG.md](CHANGELOG.md) for releases.
+> Status: `v0.2.0` — complete local dev loop (forward, CLI, 6 providers, replay upgrades, GC + rate limits). See [PLAN.md](PLAN.md) for scope and [CHANGELOG.md](CHANGELOG.md) for releases.
 
 ## Why
 
@@ -107,18 +107,21 @@ Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), 
 ## Layout
 
 ```
-cmd/omnihook        binary entry (up|version)
+cmd/omnihook        binary entry (up|version + DB-backed subcommands)
+internal/api        REST + SSE + UI server (+ hermetic tests)
+internal/capture    raw-body capture handler + SSE fan-out hub + rate gate
+internal/cli        new/list/show/replay/verify/gc subcommands
 internal/config     env config
 internal/db         SQLite open + migrate (WAL)
-internal/verify     stripe|github|standard|razorpay|generic + chain
-internal/capture    raw-body capture handler + SSE hub + rate gate
 internal/forward    async forward worker (records to replays, SSRF-guarded)
 internal/gc         retention cleanup (CLI one-shot + hourly scheduler)
 internal/ratelimit  per-IP token bucket for capture responses
-internal/replay     replay client with SSRF guard
-internal/api        REST + SSE + UI server (+ hermetic tests)
+internal/replay     replay client (options, re-sign, SSRF guard)
+internal/verify     stripe|github|standard|razorpay|shopify|generic + chain + re-sign
 web/                single-page inbox UI
 migrations/         idempotent SQL (source of truth; mirrored inline in db.go)
+scripts/checkdocs   docs-freshness gates (CHANGELOG, README env table, schema sync)
+docs/               PROVIDERS.md (connect guides + test results), MANUAL-TEST.md
 ```
 
 ## Development
