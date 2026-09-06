@@ -25,11 +25,15 @@ type Handler struct {
 	// Limiter gates responses (store always, answer 429 when empty).
 	// Nil means no limiting. NewHandler wires it from Cfg.
 	Limiter *ratelimit.Limiter
+	// Forwarder bounds automatic delivery. Nil disables forwarding.
+	Forwarder *forward.Service
 }
 
-// NewHandler builds a Handler with rate limiting from cfg (0 disables).
+// NewHandler builds a Handler with rate limiting and bounded forwarding.
 func NewHandler(db *sql.DB, cfg config.Config, hub *Hub) *Handler {
-	return &Handler{DB: db, Cfg: cfg, Hub: hub, Limiter: ratelimit.New(cfg.RateLimitRPS)}
+	return &Handler{DB: db, Cfg: cfg, Hub: hub,
+		Limiter:   ratelimit.New(cfg.RateLimitRPS),
+		Forwarder: forward.NewService(db, cfg.Port, 8, 128)}
 }
 
 // clientIP prefers X-Forwarded-For (tunnel setups) then RemoteAddr.
@@ -145,8 +149,10 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 	h.Hub.Broadcast(id)
 
 	// Async forward if configured (never blocks capture response).
-	if target != "" {
-		go forward.Deliver(h.DB, id, target)
+	// Marked requests (already forwarded/replayed by OmniHook) are captured
+	// as evidence but never re-forwarded — loop breaker, not auth.
+	if target != "" && h.Forwarder != nil && !forward.Marked(r.Header) {
+		h.Forwarder.Enqueue(id, target)
 	}
 
 	// Rate gate on the RESPONSE only: the request is already stored as

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/db"
@@ -20,11 +21,15 @@ func testHandler(t *testing.T, rps int) *Handler {
 	if err != nil {
 		t.Fatalf("db open: %v", err)
 	}
-	t.Cleanup(func() { _ = sqldb.Close() })
+	h := NewHandler(sqldb, cfg, NewHub())
+	t.Cleanup(func() {
+		h.Forwarder.Stop(0)
+		_ = sqldb.Close()
+	})
 	if _, err := sqldb.Exec(`INSERT INTO endpoints(slug) VALUES('rl')`); err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(sqldb, cfg, NewHub())
+	return h
 }
 
 func post(t *testing.T, h *Handler) int {
@@ -103,5 +108,31 @@ func TestHubFansOutToAllSubscribers(t *testing.T) {
 	case got := <-b:
 		t.Fatalf("unsubscribed got %q", got)
 	default:
+	}
+}
+
+// Marked incoming requests are captured as evidence but never re-forwarded
+// (loop breaker for replay-of-replay and endpoint cycles).
+func TestMarkedIncomingSkipsForward(t *testing.T) {
+	h := testHandler(t, 0)
+	if _, err := h.DB.Exec(`UPDATE endpoints SET target_url='http://127.0.0.1:1/x' WHERE slug='rl'`); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/hook/rl", strings.NewReader(`{"a":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Omnihook-Forward", "true")
+	rec := httptest.NewRecorder()
+	h.ServeHook(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("capture = %d", rec.Code)
+	}
+	h.Forwarder.Stop(2 * time.Second)
+	var n int
+	_ = h.DB.QueryRow(`SELECT COUNT(*) FROM replays`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("marked request was forwarded (%d attempts)", n)
+	}
+	if n := count(t, h); n != 1 {
+		t.Fatalf("marked request not stored (%d)", n)
 	}
 }

@@ -2,12 +2,15 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/you/omnihook/internal/api"
@@ -72,14 +75,19 @@ func run(args []string) int {
 
 // scheduleGC enforces retention hourly for long-running servers.
 // The one-shot `omnihook gc` command covers ephemeral runs.
-func scheduleGC(sqldb *sql.DB, retentionHrs int) {
+func scheduleGC(ctx context.Context, sqldb *sql.DB, retentionHrs int) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
-	for range t.C {
-		if reqs, eps, err := gc.Run(sqldb, retentionHrs); err != nil {
-			log.Printf("gc: %v", err)
-		} else if reqs+eps > 0 {
-			log.Printf("gc: deleted %d requests, %d endpoints", reqs, eps)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if reqs, eps, err := gc.Run(sqldb, retentionHrs); err != nil {
+				log.Printf("gc: %v", err)
+			} else if reqs+eps > 0 {
+				log.Printf("gc: deleted %d requests, %d endpoints", reqs, eps)
+			}
 		}
 	}
 }
@@ -90,11 +98,20 @@ func runServe(cfg config.Config) int {
 		fmt.Fprintln(os.Stderr, "db open:", err)
 		return cli.ExitError
 	}
-	defer sqldb.Close()
 	hub := capture.NewHub()
 	cap := capture.NewHandler(sqldb, cfg, hub)
-	go scheduleGC(sqldb, cfg.RetentionHrs)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go scheduleGC(ctx, sqldb, cfg.RetentionHrs)
 	srv := api.New(sqldb, cfg, cap)
+	httpSrv := &http.Server{
+		Addr:              cfg.Bind + ":" + cfg.Port,
+		Handler:           srv.Mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	addr := cfg.Bind + ":" + cfg.Port
 	fmt.Printf("OmniHook %s listening on http://%s\nUI: http://%s/\nHealth: http://%s/health\nData: %s\n",
 		cfg.Version, addr, addr, addr, cfg.DBPath)
@@ -105,9 +122,22 @@ func runServe(cfg config.Config) int {
 			fmt.Fprintln(os.Stderr, "NOTE: listening on non-loopback "+cfg.Bind+"; management is gated by ACCESS_TOKEN, /hook/* stays public by design.")
 		}
 	}
-	if err := http.ListenAndServe(addr, srv.Mux); err != nil {
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpSrv.ListenAndServe() }()
+	select {
+	case <-ctx.Done():
+		fmt.Fprintln(os.Stderr, "shutting down...")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutCtx)
+		// Drain bounded forwarding before closing storage, so acknowledged
+		// captures are not lost between forward and record.
+		cap.Forwarder.Stop(5 * time.Second)
+		_ = sqldb.Close()
+		return cli.ExitOK
+	case err := <-errCh:
 		fmt.Fprintln(os.Stderr, err)
+		_ = sqldb.Close()
 		return cli.ExitError
 	}
-	return cli.ExitOK
 }
