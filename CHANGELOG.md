@@ -6,6 +6,9 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- Shopify verifier (`X-Shopify-Hmac-Sha256` base64 HMAC + topic/domain detect,
+  incl. hex-instead-of-base64 hint) and Clerk compatibility proven via Standard
+  `svix-*` headers; matrix now 29/29; `docs/PROVIDERS.md` §§5–6 (closes #6).
 - CLI (closes #3): `new/list/show/replay/verify/gc`, `up --port`; flags accepted
   before or after positionals; exit codes 0 ok / 1 error / 2 verify-FAIL.
   `verify` is fully offline (headers/body files, `@path` or stdin).

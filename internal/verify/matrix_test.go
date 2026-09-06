@@ -65,12 +65,34 @@ func (s signer) razorpayHeaders(raw []byte) map[string]string {
 	return map[string]string{"X-Razorpay-Signature": sha256Hex(s.razorpaySecret, raw)}
 }
 
+func (s signer) shopifyHeaders(raw []byte) map[string]string {
+	m := hmac.New(sha256.New, []byte(s.razorpaySecret))
+	m.Write(raw)
+	return map[string]string{
+		"X-Shopify-Hmac-Sha256": base64.StdEncoding.EncodeToString(m.Sum(nil)),
+		"X-Shopify-Topic":       "orders/create",
+		"X-Shopify-Shop-Domain": "acme.myshopify.com",
+	}
+}
+
+// Clerk sends Svix-style svix-* headers with a whsec_ secret; the Standard
+// verifier must accept them without any Clerk-specific code.
+func (s signer) clerkHeaders(id string, ts int64, raw []byte) map[string]string {
+	t := fmt.Sprint(ts)
+	sig := sha256B64(s.standardKey, []byte(id+"."+t+"."+string(raw)))
+	return map[string]string{
+		"svix-id": id, "svix-timestamp": t, "svix-signature": "v1," + sig,
+	}
+}
+
 // Realistic payloads (shapes taken from provider docs).
 var (
 	stripeBody   = []byte(`{"id":"evt_matrix1","object":"event","type":"checkout.session.completed","data":{"object":{"id":"cs_test_123","amount_total":5000,"currency":"usd"}}}`)
 	githubBody   = []byte(`{"ref":"refs/heads/main","repository":{"full_name":"acme/app"},"commits":[{"id":"abc123","message":"fix webhook"}]}`)
 	standardBody = []byte(`{"type":"payment.succeeded","data":{"id":"pay_001","amount":5000}}`)
 	razorpayBody = []byte(`{"entity":"event","event":"payment.captured","payload":{"payment":{"entity":{"id":"pay_ABC","amount":5000,"status":"captured"}}}}`)
+	shopifyBody  = []byte(`{"id":123456,"order_number":1001,"total_price":"99.00","currency":"USD"}`)
+	clerkBody    = []byte(`{"data":{"id":"user_abc","object":"user"},"object":"event","type":"user.created"}`)
 )
 
 func TestProviderMatrix(t *testing.T) {
@@ -92,27 +114,36 @@ func TestProviderMatrix(t *testing.T) {
 		{"github valid", "github", s.githubSecret, s.githubHeaders(githubBody), githubBody, PASS, false},
 		{"standard valid", "standard", s.standardSecret, s.standardHeaders("msg_m1", ts, standardBody), standardBody, PASS, false},
 		{"razorpay valid", "razorpay", s.razorpaySecret, s.razorpayHeaders(razorpayBody), razorpayBody, PASS, false},
+		{"shopify valid", "shopify", s.razorpaySecret, s.shopifyHeaders(shopifyBody), shopifyBody, PASS, false},
+		{"clerk via standard", "standard", s.standardSecret, s.clerkHeaders("msg_clerk1", ts, clerkBody), clerkBody, PASS, false},
 		// Auto-detect (no hint): headers alone select the verifier.
 		{"stripe auto-detect", "", s.stripeSecret, s.stripeHeaders(stripeBody, ts), stripeBody, PASS, false},
 		{"github auto-detect", "", s.githubSecret, s.githubHeaders(githubBody), githubBody, PASS, false},
 		{"standard auto-detect", "", s.standardSecret, s.standardHeaders("msg_m2", ts, standardBody), standardBody, PASS, false},
 		{"razorpay auto-detect", "", s.razorpaySecret, s.razorpayHeaders(razorpayBody), razorpayBody, PASS, false},
+		{"shopify auto-detect", "", s.razorpaySecret, s.shopifyHeaders(shopifyBody), shopifyBody, PASS, false},
+		{"clerk auto-detect", "", s.standardSecret, s.clerkHeaders("msg_clerk2", ts, clerkBody), clerkBody, PASS, false},
 		// Tampered bodies must FAIL with actionable hints.
 		{"stripe tampered", "stripe", s.stripeSecret, s.stripeHeaders(stripeBody, ts), []byte(`{"id":"evt_matrix1","object":"event","type":"refund.created"}`), FAIL, true},
 		{"github tampered", "github", s.githubSecret, s.githubHeaders(githubBody), append(githubBody, ' '), FAIL, true},
 		{"standard tampered", "standard", s.standardSecret, s.standardHeaders("msg_m1", ts, standardBody), []byte(`{"type":"payment.failed"}`), FAIL, true},
 		{"razorpay tampered", "razorpay", s.razorpaySecret, s.razorpayHeaders(razorpayBody), razorpayBody[:len(razorpayBody)-1], FAIL, true},
+		{"shopify tampered", "shopify", s.razorpaySecret, s.shopifyHeaders(shopifyBody), append(shopifyBody, ' '), FAIL, true},
 		// Wrong secrets must FAIL.
 		{"stripe wrong secret", "stripe", "whsec_wrong", s.stripeHeaders(stripeBody, ts), stripeBody, FAIL, true},
 		{"github wrong secret", "github", "wrong", s.githubHeaders(githubBody), githubBody, FAIL, true},
 		{"standard wrong secret", "standard", "whsec_" + base64.StdEncoding.EncodeToString([]byte("wrong-key-12345678901234567890")), s.standardHeaders("msg_m1", ts, standardBody), standardBody, FAIL, true},
 		{"razorpay wrong secret", "razorpay", "wrong", s.razorpayHeaders(razorpayBody), razorpayBody, FAIL, true},
+		{"shopify wrong secret", "shopify", "wrong", s.shopifyHeaders(shopifyBody), shopifyBody, FAIL, true},
+		{"shopify hex-instead-of-base64", "shopify", s.razorpaySecret,
+			map[string]string{"X-Shopify-Hmac-Sha256": sha256Hex(s.razorpaySecret, shopifyBody)}, shopifyBody, FAIL, true},
 		// Expired timestamps must FAIL (replay-attack guard).
 		{"stripe expired", "stripe", s.stripeSecret, s.stripeHeaders(stripeBody, ts-600), stripeBody, FAIL, false},
 		{"standard expired", "standard", s.standardSecret, s.standardHeaders("msg_m1", ts-600, standardBody), standardBody, FAIL, false},
 		// Missing secrets must FAIL with setup guidance.
 		{"stripe no secret", "stripe", "", s.stripeHeaders(stripeBody, ts), stripeBody, FAIL, true},
 		{"github no secret", "github", "", s.githubHeaders(githubBody), githubBody, FAIL, true},
+		{"shopify no secret", "shopify", "", s.shopifyHeaders(shopifyBody), shopifyBody, FAIL, true},
 		// Unknown traffic is SKIPPED, never hard-failed.
 		{"unknown skips", "", "x", map[string]string{"Content-Type": "application/json"}, []byte(`{}`), SKIPPED, false},
 	}
