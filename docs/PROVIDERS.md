@@ -53,13 +53,28 @@ Connect:
 
 Scheme: `X-Razorpay-Signature: <hex>`, `HMAC_SHA256(secret, raw_body)`.
 
-## 5. Anything else — Generic HMAC
+## 5. Shopify — `orders/create` and friends
+
+Connect:
+1. `omnihook new shop1 --provider shopify --secret YOUR_SECRET --target http://localhost:3000/webhooks/shopify`
+2. Admin → Settings → Notifications → Webhooks → Create webhook → URL `https://<tunnel>/hook/shop1`, secret = same value.
+
+Scheme: `X-Shopify-Hmac-Sha256: <base64>`, `base64(HMAC_SHA256(secret, raw_body))` — base64, not hex. OmniHook also detects `X-Shopify-Topic` / `X-Shopify-Shop-Domain`. A hex signature in that header FAILs with a base64 hint (covered in the matrix).
+
+## 6. Clerk — `user.created` and friends (via Standard Webhooks)
+
+No Clerk-specific code needed: Clerk sends Svix-style `svix-id` / `svix-timestamp` / `svix-signature` headers with a `whsec_...` secret, which the `standard` verifier accepts (proven by `clerk via standard` + `clerk auto-detect` matrix cases).
+Connect: `omnihook new clerk1 --provider standard --secret whsec_YOURS`, paste the same secret from Clerk Dashboard → Webhooks.
+
+## 7. Anything else — Generic HMAC
 
 No built-in verifier? The endpoint still captures everything (`SKIPPED`, never hard-failed). For HMAC современным: reuse the `generic` verifier pattern (`header + optional prefix + SHA256`) or open an issue with the provider's signing docs — new verifiers are ~30 lines + golden tests (see `internal/verify/razorpay.go`).
 
-## 6. Test results (2026-09-06, commit `feat/cli` pre-merge)
+## 8. Test results
 
-Unit matrix `go test ./internal/verify/ -run TestProviderMatrix` — 21/21 PASS:
+Unit matrix `go test ./internal/verify/ -run TestProviderMatrix` — 29/29 PASS
+(21 original cases plus 8 new: Shopify valid/auto-detect/tampered/wrong-secret/
+hex-instead-of-base64/no-secret, Clerk pinned/auto-detect via Standard):
 
 | Provider | valid | auto-detect | tampered→FAIL+hint | wrong secret→FAIL | expired→FAIL | no secret→FAIL+hint |
 |---|---|---|---|---|---|---|
@@ -67,6 +82,8 @@ Unit matrix `go test ./internal/verify/ -run TestProviderMatrix` — 21/21 PASS:
 | GitHub | ✅ | ✅ | ✅ | ✅ | n/a | ✅ |
 | Standard | ✅ | ✅ | ✅ | ✅ | ✅ | n/a |
 | Razorpay | ✅ | ✅ | ✅ | ✅ | n/a | n/a |
+| Shopify | ✅ | ✅ | ✅ (+hex-vs-base64) | ✅ | n/a | ✅ |
+| Clerk (via standard) | ✅ | ✅ | — | — | — | — |
 | Unknown | — | — | — | — | — | SKIPPED ✅ |
 
 Live binary E2E (`bin/omnihook.exe`, server + CLI, real HMAC over HTTP):

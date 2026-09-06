@@ -75,7 +75,7 @@ curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json'
 
 ## Signature verification (the useful part)
 
-Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Generic HMAC**. Auto-detected from headers or pinned per endpoint. Every `FAIL` ships a fix hint:
+Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Shopify** (`X-Shopify-Hmac-Sha256`, base64), **Generic HMAC**. Auto-detected from headers or pinned per endpoint. Every `FAIL` ships a fix hint:
 
 - Express: `app.post('/hook', express.raw({type:'application/json'}))` — never `express.json()` before HMAC.
 - Spring Boot: `@RequestBody byte[] raw` + `Mac.getInstance("HmacSHA256")`.

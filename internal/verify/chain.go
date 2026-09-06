@@ -47,7 +47,7 @@ func (g Generic) Verify(secret string, h map[string]string, raw []byte, _ time.T
 
 // Chain runs detectors in order; returns SKIPPED if none match.
 func Chain(secret, providerHint string, headers map[string]string, raw []byte, now time.Time) Result {
-	all := []Verifier{Stripe{}, GitHub{}, Standard{}, Razorpay{}}
+	all := []Verifier{Stripe{}, GitHub{}, Standard{}, Razorpay{}, Shopify{}}
 	if providerHint != "" && providerHint != "generic" {
 		for _, v := range all {
 			if v.Name() == providerHint {
