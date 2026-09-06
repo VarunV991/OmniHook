@@ -18,7 +18,9 @@ import (
 	"github.com/you/omnihook/internal/gc"
 )
 
-var version = "v0.1.0"
+// version is the release tag, injected by GoReleaser ldflags (-X main.version).
+// Default "dev" marks untagged local builds so they never masquerade as a release.
+var version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -34,6 +36,10 @@ func run(args []string) int {
 		fs := flag.NewFlagSet("up", flag.ContinueOnError)
 		port := fs.String("port", cfg.Port, "HTTP port")
 		if err := fs.Parse(args[1:]); err != nil {
+			return cli.ExitError
+		}
+		if fs.NArg() > 0 {
+			fmt.Fprintln(os.Stderr, "usage: omnihook up [--port P]")
 			return cli.ExitError
 		}
 		cfg.Port = *port

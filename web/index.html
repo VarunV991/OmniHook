@@ -32,18 +32,26 @@ code{color:#9ecbff}
 <div id="d"></div></div>
 </main>
 <script>
-async function api(p,o){const r=await fetch(p,o);return r.json();}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function authHeaders(){const t=localStorage.getItem('omnihook_token');return t?{'Authorization':'Bearer '+t}:{};}
+async function api(p,o){
+  o=o||{};o.headers=Object.assign({},o.headers||{},authHeaders());
+  let r=await fetch(p,o);
+  if(r.status===401){const t=prompt('Access token (ACCESS_TOKEN):');if(t){localStorage.setItem('omnihook_token',t);o.headers=Object.assign({},o.headers,{'Authorization':'Bearer '+t});r=await fetch(p,o);}}
+  if(!r.ok){throw new Error(await r.text());}
+  return r.json();
+}
 async function refresh(){
   const eps=await api('/api/endpoints');
   const box=document.getElementById('items');box.innerHTML='';
   for(const e of eps){
     const reqs=await api(`/api/endpoints/${e.slug}/requests?limit=20`);
-    const h=document.createElement('div');h.innerHTML=`<b>${e.slug}</b> <span style="color:#8b949e">${e.provider||'generic'}</span>`;
+    const h=document.createElement('div');h.innerHTML=`<b>${esc(e.slug)}</b> <span style="color:#8b949e">${esc(e.provider||'generic')}</span>`;
     box.appendChild(h);
     for(const q of reqs){
       const d=document.createElement('div');d.className='item';
       const cls=q.verify_status==='PASS'?'pass':q.verify_status==='FAIL'?'fail':'skip';
-      d.innerHTML=`<code>${q.method}</code> ${q.path} <span class="badge ${cls}">${q.verify_status}</span><br/><small style="color:#8b949e">${q.id.slice(0,8)} · ${q.received_at}</small>`;
+      d.innerHTML=`<code>${esc(q.method)}</code> ${esc(q.path)} <span class="badge ${cls}">${esc(q.verify_status)}</span><br/><small style="color:#8b949e">${esc(q.id.slice(0,8))} · ${esc(q.received_at)}</small>`;
       d.onclick=()=>show(q.id);
       box.appendChild(d);
     }
@@ -52,10 +60,10 @@ async function refresh(){
 async function show(id){
   const q=await api('/api/requests/'+id);
   document.getElementById('d').innerHTML=
-   `<h3><code>${q.method}</code> ${q.path} <span class="badge">${q.verify_status}</span></h3>`+
-   (q.fix_hint?`<div class="hint"><b>Fix:</b> ${q.fix_hint}</div>`:'')+
-   `<h4>Headers</h4><pre>${JSON.stringify(JSON.parse(q.headers||'{}'),null,2)}</pre>`+
-   `<h4>Body</h4><pre>${(q.body_text||'').slice(0,20000)}</pre>`+
+   `<h3><code>${esc(q.method)}</code> ${esc(q.path)} <span class="badge">${esc(q.verify_status)}</span></h3>`+
+   (q.fix_hint?`<div class="hint"><b>Fix:</b> ${esc(q.fix_hint)}</div>`:'')+
+   `<h4>Headers</h4><pre>${esc(JSON.stringify(JSON.parse(q.headers||'{}'),null,2))}</pre>`+
+   `<h4>Body</h4><pre>${esc((q.body_text||'').slice(0,20000))}</pre>`+
    `<h4>Replay</h4><input id="t" value="http://localhost:3000/webhooks/stripe" placeholder="target localhost URL"/>`+
    `<div><label>times <input id="tn" type="number" value="1" min="1" max="50" style="width:80px"/></label> `+
    `<label><input id="rs" type="checkbox"/> re-sign (refresh timestamps with endpoint secret)</label></div>`+
@@ -69,12 +77,13 @@ async function replay(id){
   document.getElementById('rout').textContent=JSON.stringify(r,null,2);
 }
 async function newEndpoint(){
-  const slug=prompt('slug?','proj1');if(!slug)return;
-  await api('/api/endpoints',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slug})});
+  const slug=prompt('slug? (letters, digits, -, _)','proj1');if(!slug)return;
+  try{await api('/api/endpoints',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slug})});}
+  catch(e){alert('Create failed: '+e.message);return;}
   refresh();
 }
-fetch('/health').then(r=>r.json()).then(j=>document.getElementById('health').textContent='db:'+j.db+' v'+j.version);
-refresh();setInterval(refresh,3000);
+fetch('/health').then(r=>r.json()).then(j=>document.getElementById('health').textContent='db:'+j.db+' v'+j.version).catch(()=>{});
+refresh().catch(()=>{});setInterval(()=>refresh().catch(()=>{}),3000);
 </script>
 </body>
 </html>

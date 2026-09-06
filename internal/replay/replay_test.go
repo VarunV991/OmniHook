@@ -75,3 +75,54 @@ func TestResignMakesStaleStripePass(t *testing.T) {
 		t.Fatalf("resigned did not verify: %q", st)
 	}
 }
+
+func TestBlockedReplayIsRecorded(t *testing.T) {
+	sqldb := mustDB(t)
+	if _, err := sqldb.Exec(`INSERT INTO endpoints(slug) VALUES('b1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqldb.Exec(`INSERT INTO requests(id, endpoint_slug, method) VALUES('b-req','b1','POST')`); err != nil {
+		t.Fatal(err)
+	}
+	code, _, msg := Send(sqldb, "b-req", "http://169.254.169.254/x", nil, nil)
+	if code != 0 || msg == "" {
+		t.Fatalf("code=%d msg=%q", code, msg)
+	}
+	var n int
+	_ = sqldb.QueryRow(`SELECT COUNT(*) FROM replays WHERE request_id='b-req'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("blocked attempt not recorded (n=%d)", n)
+	}
+}
+
+func TestReplayRestoresOriginalHeadersOnce(t *testing.T) {
+	sqldb := mustDB(t)
+	if _, err := sqldb.Exec(`INSERT INTO endpoints(slug) VALUES('h1')`); err != nil {
+		t.Fatal(err)
+	}
+	hj, _ := json.Marshal(map[string][]string{
+		"Content-Type": {"application/json"},
+		"X-Custom":     {"keep-me"},
+	})
+	if _, err := sqldb.Exec(`INSERT INTO requests(id, endpoint_slug, method, headers, content_type, body, body_size)
+		VALUES('h-req','h1','POST',?,?,?,7)`, string(hj), "application/json", []byte(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	var custom string
+	var ctValues []string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		custom = r.Header.Get("X-Custom")
+		ctValues = r.Header["Content-Type"]
+		w.WriteHeader(200)
+	}))
+	defer target.Close()
+	if code, _, _ := Send(sqldb, "h-req", target.URL, nil, nil); code != 200 {
+		t.Fatalf("code=%d", code)
+	}
+	if custom != "keep-me" {
+		t.Fatalf("original header lost: %q", custom)
+	}
+	if len(ctValues) != 1 || ctValues[0] != "application/json" {
+		t.Fatalf("content-type duplicated/lost: %q", ctValues)
+	}
+}

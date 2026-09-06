@@ -47,7 +47,10 @@ func run() error {
 		}
 		fmt.Println("note: code changed without CHANGELOG touch, but [Unreleased] has entries")
 	}
-	return checkConfigTable()
+	if err := checkConfigTable(); err != nil {
+		return err
+	}
+	return checkSchemaSync()
 }
 
 // changedFiles lists paths changed vs main (CI/PR) or working tree (local).
@@ -131,6 +134,48 @@ func checkConfigTable() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("README.md missing config keys: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+var wsRe = regexp.MustCompile(`\s+`)
+
+// checkSchemaSync ensures every statement in migrations/001_init.sql has an
+// identical twin in the inline schema const in internal/db/db.go (kept inline
+// because go:embed cannot reference ../../ paths). Prevents silent drift.
+func checkSchemaSync() error {
+	mig, err := os.ReadFile("migrations/001_init.sql")
+	if err != nil {
+		return err
+	}
+	dbsrc, err := os.ReadFile("internal/db/db.go")
+	if err != nil {
+		return err
+	}
+	norm := func(s string) string {
+		// Strip -- comments FIRST (they may contain semicolons), then split.
+		var code []string
+		for _, l := range strings.Split(s, "\n") {
+			if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "--") {
+				code = append(code, t)
+			}
+		}
+		var stmts []string
+		for _, part := range strings.Split(strings.Join(code, "\n"), ";") {
+			if t := wsRe.ReplaceAllString(strings.ToLower(strings.TrimSpace(part)), " "); t != "" {
+				stmts = append(stmts, t)
+			}
+		}
+		return strings.Join(stmts, ";\n")
+	}
+	want, got := norm(string(mig)), norm(string(dbsrc))
+	for _, stmt := range strings.Split(want, ";\n") {
+		if stmt == "" {
+			continue
+		}
+		if !strings.Contains(got, stmt) {
+			return fmt.Errorf("migrations/001_init.sql statement missing from internal/db/db.go inline schema: %.80q...", stmt)
+		}
 	}
 	return nil
 }

@@ -117,6 +117,22 @@ func TestUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestUnknownFlagFails(t *testing.T) {
+	sqldb, cfg := testSetup(t)
+	var out, errBuf bytes.Buffer
+	if code := Run(sqldb, cfg, []string{"list", "--bogus"}, &out, &errBuf); code != ExitError {
+		t.Fatalf("exit=%d, want error for unknown flag", code)
+	}
+}
+
+func TestNewRejectsBadSlug(t *testing.T) {
+	sqldb, cfg := testSetup(t)
+	var out, errBuf bytes.Buffer
+	if code := Run(sqldb, cfg, []string{"new", "a/b"}, &out, &errBuf); code != ExitError {
+		t.Fatalf("exit=%d, want error for bad slug", code)
+	}
+}
+
 func TestListJSONShape(t *testing.T) {
 	sqldb, cfg := testSetup(t)
 	runOK(t, sqldb, cfg, "new", "j1", "--provider", "github")

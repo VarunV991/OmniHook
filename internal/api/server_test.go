@@ -124,6 +124,96 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func doAPI(t *testing.T, s *Server, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr *bytes.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	} else {
+		rdr = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// Endpoint + request lifecycle: upsert on re-create, PATCH secret/target,
+// clear requests, delete request, delete endpoint.
+func TestEndpointLifecycle(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "lc", "provider": "generic"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d", rec.Code)
+	}
+	// Re-create with new values upserts instead of silently ignoring.
+	rec = doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "lc", "provider": "stripe", "secret": "whsec_1", "target_url": "http://localhost:9/x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-create = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "GET", "/api/endpoints/lc", nil)
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["provider"] != "stripe" || got["target_url"] != "http://localhost:9/x" {
+		t.Fatalf("upsert failed: %s", rec.Body.String())
+	}
+	// PATCH a subset.
+	rec = doAPI(t, s, "PATCH", "/api/endpoints/lc", map[string]string{"secret": "whsec_2"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch = %d: %s", rec.Code, rec.Body.String())
+	}
+	// Capture one request, then clear + delete flows.
+	_, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method) VALUES('lc-1','lc','POST'),('lc-2','lc','POST')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = doAPI(t, s, "DELETE", "/api/requests/lc-1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete request = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "DELETE", "/api/endpoints/lc/requests", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear requests = %d", rec.Code)
+	}
+	var n int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE endpoint_slug='lc'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("remaining = %d", n)
+	}
+	rec = doAPI(t, s, "DELETE", "/api/endpoints/lc", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete endpoint = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "GET", "/api/endpoints/lc", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get deleted = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "PATCH", "/api/endpoints/nope", map[string]string{"secret": "x"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("patch missing = %d", rec.Code)
+	}
+}
+
+func TestSlugValidation(t *testing.T) {
+	s := newTestServer(t)
+	for _, bad := range []string{"a/b", "..", "../x", "-lead", "_lead", "has space", "semi;colon", "toolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongxx"} {
+		rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": bad})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("slug %q = %d, want 400", bad, rec.Code)
+		}
+	}
+	for _, good := range []string{"a", "proj-1_2", "X9"} {
+		rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": good})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("slug %q = %d, want 200", good, rec.Code)
+		}
+	}
+	if !ValidSlug("ok-1") || ValidSlug("") || ValidSlug("a/b") {
+		t.Fatal("ValidSlug wrong")
+	}
+}
+
 // Replay upgrades: times=N returns a results array; resign refreshes a stale
 // Stripe signature so the target sees a verifiable PASS.
 func TestReplayTimesAndResign(t *testing.T) {
