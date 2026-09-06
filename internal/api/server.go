@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/replay"
 	"github.com/you/omnihook/internal/slug"
+	"github.com/you/omnihook/internal/webui"
 )
 
 // Server wires capture + management API + embedded UI.
@@ -26,28 +26,11 @@ type Server struct {
 	Mux *http.ServeMux
 }
 
-// indexHTML serves web/index.html from disk when present (dev + docker),
-// falling back to a minimal placeholder so the binary never depends on
-// go:embed ../../ paths.
-func indexHTML() []byte {
-	for _, p := range []string{"web/index.html", "./web/index.html", "../web/index.html"} {
-		if b, err := os.ReadFile(p); err == nil {
-			return b
-		}
-	}
-	return []byte(`<html><body><h3>OmniHook up. UI file web/index.html not found.</h3></body></html>`)
-}
+// indexHTML serves the inbox UI: embedded asset with WEB_DIR override.
+func indexHTML() []byte { return webui.Index() }
 
-// loginHTML serves web/login.html from disk when present, else a minimal
-// inline form with the same behavior (POST token to /api/login).
-func loginHTML() []byte {
-	for _, p := range []string{"web/login.html", "./web/login.html", "../web/login.html"} {
-		if b, err := os.ReadFile(p); err == nil {
-			return b
-		}
-	}
-	return []byte(`<html><body><form method="post" action="/api/login">Token: <input type="password" name="token"/><button>Sign in</button></form></body></html>`)
-}
+// loginHTML serves the sign-in shell: embedded asset with WEB_DIR override.
+func loginHTML() []byte { return webui.Login() }
 
 func New(db *sql.DB, cfg config.Config, cap *capture.Handler) *Server {
 	s := &Server{DB: db, Cfg: cfg, Cap: cap, Mux: http.NewServeMux()}
@@ -486,6 +469,32 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := rest
+	if strings.HasSuffix(rest, "/replays") && r.Method == "GET" {
+		rid := strings.TrimSuffix(rest, "/replays")
+		rows, err := s.DB.Query(`SELECT target_url, status_code, latency_ms, error, created_at FROM replays WHERE request_id=? ORDER BY created_at DESC LIMIT 50`, rid)
+		if err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		defer rows.Close()
+		out := []map[string]any{}
+		for rows.Next() {
+			var target, errMsg, at string
+			var code int
+			var lat int64
+			if err := rows.Scan(&target, &code, &lat, &errMsg, &at); err != nil {
+				http.Error(w, "storage unavailable", 500)
+				return
+			}
+			out = append(out, map[string]any{"target_url": target, "status_code": code, "latency_ms": lat, "error": errMsg, "created_at": at})
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		writeJSON(w, out)
+		return
+	}
 	if r.Method == "DELETE" {
 		res, err := s.DB.Exec(`DELETE FROM requests WHERE id=?`, id)
 		if err != nil {

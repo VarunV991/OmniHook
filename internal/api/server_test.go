@@ -203,6 +203,31 @@ func TestEndpointLifecycle(t *testing.T) {
 	}
 }
 
+// B: delivery-attempt history lists forwards/replays per request.
+func TestReplaysHistory(t *testing.T) {
+	s := newTestServer(t)
+	if _, err := s.DB.Exec(`INSERT INTO endpoints(slug) VALUES('h1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method) VALUES('h-req','h1','POST')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO replays(id, request_id, target_url, status_code, latency_ms, error) VALUES('r1','h-req','http://localhost:9',500,12,'boom')`); err != nil {
+		t.Fatal(err)
+	}
+	rec := doAPI(t, s, "GET", "/api/requests/h-req/replays", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replays = %d", rec.Code)
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out) != 1 {
+		t.Fatalf("out=%s err=%v", rec.Body.String(), err)
+	}
+	if out[0]["status_code"] != float64(500) || out[0]["error"] != "boom" {
+		t.Fatalf("row=%v", out[0])
+	}
+}
+
 func TestSlugValidation(t *testing.T) {
 	s := newTestServer(t)
 	for _, bad := range []string{"a/b", "..", "../x", "-lead", "_lead", "has space", "semi;colon", "toolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongxx"} {

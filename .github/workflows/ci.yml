@@ -9,8 +9,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # checkdocs needs the main base for change detection
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
           cache: true
       - run: make verify
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build
+      - run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8080/health && break || sleep 2
+          done
+          curl -sf http://localhost:8080/health | grep -q '"db":"up"'
+      - run: |
+          AUTH="Authorization: Bearer changeme"
+          curl -sf -X POST http://localhost:8080/api/endpoints \
+            -H "$AUTH" -H 'Content-Type: application/json' \
+            -d '{"slug":"cismoke","provider":"generic","target_url":"http://echo:3000"}'
+          curl -sf -X POST http://localhost:8080/hook/cismoke \
+            -H 'Content-Type: application/json' -d '{"ci":true}'
+          curl -sf http://localhost:8080/ -H "$AUTH" | grep -q OmniHook
+          curl -sf http://localhost:8080/login | grep -q api/login
+          # anonymous management stays denied
+          if curl -sf http://localhost:8080/api/endpoints; then exit 1; fi
+      - run: docker compose down -v

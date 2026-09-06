@@ -25,7 +25,14 @@ code{color:#9ecbff}
 <header>OmniHook <span style="font-weight:400;color:#8b949e">capture · verify · replay — <code id="health">…</code></span></header>
 <main>
 <div id="list"><div style="padding:12px">
-<button onclick="newEndpoint()">+ New endpoint</button>
+<details open><summary><b>+ New endpoint</b></summary>
+<div style="margin-top:8px">
+<input id="ns" placeholder="slug (letters, digits, -, _)"/>
+<select id="np"><option value="generic">generic</option><option value="stripe">stripe</option><option value="github">github</option><option value="standard">standard</option><option value="razorpay">razorpay</option><option value="shopify">shopify</option></select>
+<input id="nsec" type="password" placeholder="signing secret (optional)"/>
+<input id="nt" placeholder="forward target http://localhost:3000/hook (optional)"/>
+<button onclick="newEndpoint()">Create</button>
+</div></details>
 <div id="items"></div></div></div>
 <div id="detail"><h3>Select a request</h3>
 <p>Create an endpoint, point your provider at <code>/hook/&lt;slug&gt;</code>, then replay to localhost unlimited times.</p>
@@ -46,25 +53,37 @@ async function refresh(){
   const box=document.getElementById('items');box.innerHTML='';
   for(const e of eps){
     const reqs=await api(`/api/endpoints/${e.slug}/requests?limit=20`);
-    const h=document.createElement('div');h.innerHTML=`<b>${esc(e.slug)}</b> <span style="color:#8b949e">${esc(e.provider||'generic')}</span>`;
+    const curl=location.origin+'/hook/'+e.slug;
+    const h=document.createElement('div');
+    h.innerHTML=`<b>${esc(e.slug)}</b> <span style="color:#8b949e">${esc(e.provider||'generic')}</span><br/>`+
+      `<small><code>${esc(curl)}</code> <a href="#" onclick="navigator.clipboard.writeText('${esc(curl)}');return false;">copy</a>`+
+      (e.target_url?` → <code>${esc(e.target_url)}</code>`:'')+
+      ` <a href="#" onclick="delEndpoint('${esc(e.slug)}');return false;">delete</a></small>`;
     box.appendChild(h);
     for(const q of reqs){
       const d=document.createElement('div');d.className='item';
       const cls=q.verify_status==='PASS'?'pass':q.verify_status==='FAIL'?'fail':'skip';
       d.innerHTML=`<code>${esc(q.method)}</code> ${esc(q.path)} <span class="badge ${cls}">${esc(q.verify_status)}</span><br/><small style="color:#8b949e">${esc(q.id.slice(0,8))} · ${esc(q.received_at)}</small>`;
-      d.onclick=()=>show(q.id);
+      d.onclick=()=>show(q.id,e.target_url||'');
       box.appendChild(d);
     }
   }
 }
-async function show(id){
+async function delEndpoint(slug){
+  if(!confirm('Delete endpoint '+slug+' and its requests?'))return;
+  await api('/api/endpoints/'+slug,{method:'DELETE'});refresh().catch(()=>{});
+}
+async function show(id,defTarget){
   const q=await api('/api/requests/'+id);
+  const reps=await api('/api/requests/'+id+'/replays');
   document.getElementById('d').innerHTML=
    `<h3><code>${esc(q.method)}</code> ${esc(q.path)} <span class="badge">${esc(q.verify_status)}</span></h3>`+
+   (q.verify_error?`<div class="hint"><b>Verify:</b> ${esc(q.verify_error)}</div>`:'')+
    (q.fix_hint?`<div class="hint"><b>Fix:</b> ${esc(q.fix_hint)}</div>`:'')+
    `<h4>Headers</h4><pre>${esc(JSON.stringify(JSON.parse(q.headers||'{}'),null,2))}</pre>`+
    `<h4>Body</h4><pre>${esc((q.body_text||'').slice(0,20000))}</pre>`+
-   `<h4>Replay</h4><input id="t" value="http://localhost:3000/webhooks/stripe" placeholder="target localhost URL"/>`+
+   `<h4>Delivery attempts (${reps.length})</h4><pre>${esc(reps.map(r=>`${r.created_at} → ${r.target_url} ${r.status_code} ${r.latency_ms}ms ${r.error||''}`).join('\n')||'none yet')}</pre>`+
+   `<h4>Replay</h4><input id="t" value="${esc(defTarget||'http://localhost:3000/webhooks/stripe')}" placeholder="target localhost URL"/>`+
    `<div><label>times <input id="tn" type="number" value="1" min="1" max="50" style="width:80px"/></label> `+
    `<label><input id="rs" type="checkbox"/> re-sign (refresh timestamps with endpoint secret)</label></div>`+
    `<button onclick="replay('${q.id}')">Replay</button><pre id="rout"></pre>`;
@@ -77,10 +96,15 @@ async function replay(id){
   document.getElementById('rout').textContent=JSON.stringify(r,null,2);
 }
 async function newEndpoint(){
-  const slug=prompt('slug? (letters, digits, -, _)','proj1');if(!slug)return;
-  try{await api('/api/endpoints',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slug})});}
+  const slug=document.getElementById('ns').value.trim();
+  const provider=document.getElementById('np').value;
+  const secret=document.getElementById('nsec').value;
+  const target=document.getElementById('nt').value.trim();
+  if(!slug){alert('Slug required.');return;}
+  try{await api('/api/endpoints',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slug,provider,secret,target_url:target})});}
   catch(e){alert('Create failed: '+e.message);return;}
-  refresh();
+  document.getElementById('ns').value='';document.getElementById('nsec').value='';document.getElementById('nt').value='';
+  refresh().catch(()=>{});
 }
 fetch('/health').then(r=>r.json()).then(j=>document.getElementById('health').textContent='db:'+j.db+' v'+j.version).catch(()=>{});
 refresh().catch(()=>{});setInterval(()=>refresh().catch(()=>{}),3000);

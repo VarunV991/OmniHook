@@ -77,8 +77,10 @@ These apply on every OS unless marked. When in doubt, prefer hermetic
 - `gofmt` clean, `go vet` clean. No ORM — `database/sql` + numbered SQL files in
   `migrations/` (source of truth). `internal/db/db.go` mirrors the schema inline because
   `go:embed` cannot reference `../../` paths — keep both in sync when changing tables.
-- Same `go:embed` restriction applies to `web/index.html`: it is served from disk with a
-  placeholder fallback (`internal/api/indexHTML()`), not embedded.
+- UI assets live in `internal/webui/` (`index.html`, `login.html`) and are
+  `go:embed`-ded into the binary — the package exists precisely because embed
+  cannot reference `../../` paths. Use `WEB_DIR=<repo>/internal/webui` for
+  live UI iteration; never add a disk-only asset path.
 - Verifiers (`internal/verify/`) operate on **raw body bytes**; verification must be
   constant-time (`secureEqual`). Every verifier needs golden PASS + tampered/expired
   negative tests. Every `FAIL` must include a `FixHint` with copy-paste snippets for
