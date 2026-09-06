@@ -14,6 +14,7 @@ type Config struct {
 	MaxBodyBytes int64
 	AccessToken  string
 	PublicURL    string
+	RateLimitRPS int
 	Version      string
 }
 
@@ -53,6 +54,7 @@ func Load(version string) Config {
 		MaxBodyBytes: getenvInt64("MAX_BODY_BYTES", 1<<20), // 1 MB
 		AccessToken:  os.Getenv("ACCESS_TOKEN"),
 		PublicURL:    os.Getenv("PUBLIC_URL"),
+		RateLimitRPS: getenvInt("RATE_LIMIT_RPS", 50),
 		Version:      version,
 	}
 }

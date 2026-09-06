@@ -2,16 +2,20 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/you/omnihook/internal/api"
 	"github.com/you/omnihook/internal/capture"
 	"github.com/you/omnihook/internal/cli"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/db"
+	"github.com/you/omnihook/internal/gc"
 )
 
 var version = "v0.1.0"
@@ -51,6 +55,20 @@ func run(args []string) int {
 	}
 }
 
+// scheduleGC enforces retention hourly for long-running servers.
+// The one-shot `omnihook gc` command covers ephemeral runs.
+func scheduleGC(sqldb *sql.DB, retentionHrs int) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for range t.C {
+		if reqs, eps, err := gc.Run(sqldb, retentionHrs); err != nil {
+			log.Printf("gc: %v", err)
+		} else if reqs+eps > 0 {
+			log.Printf("gc: deleted %d requests, %d endpoints", reqs, eps)
+		}
+	}
+}
+
 func runServe(cfg config.Config) int {
 	sqldb, err := db.Open(cfg.DBPath)
 	if err != nil {
@@ -59,7 +77,8 @@ func runServe(cfg config.Config) int {
 	}
 	defer sqldb.Close()
 	hub := capture.NewHub()
-	cap := &capture.Handler{DB: sqldb, Cfg: cfg, Hub: hub}
+	cap := capture.NewHandler(sqldb, cfg, hub)
+	go scheduleGC(sqldb, cfg.RetentionHrs)
 	srv := api.New(sqldb, cfg, cap)
 	addr := ":" + cfg.Port
 	fmt.Printf("OmniHook %s listening on http://localhost%s\nUI: http://localhost%s/\nHealth: http://localhost%s/health\nData: %s\n",

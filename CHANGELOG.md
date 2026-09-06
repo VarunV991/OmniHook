@@ -6,6 +6,10 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- GC + rate limiting (closes #4): `internal/gc` shared by one-shot `omnihook gc`
+  and the server's hourly scheduler; `RATE_LIMIT_RPS` (default 50, 0 disables)
+  token-bucket per IP on capture — over-limit requests are still stored as
+  evidence but answered `429 + Retry-After: 1` so providers back off.
 - Replay upgrades (closes #5): `times` (1–50) + `delay_ms` multi-replay with
   per-attempt results (API array, CLI `[i/N]` lines, UI times input);
   `resign` refreshes Stripe/GitHub/Standard/Razorpay/Shopify signatures with
