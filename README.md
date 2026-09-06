@@ -2,7 +2,7 @@
 
 Capture, verify, replay webhooks locally. No account. Data stays in your SQLite file.
 
-> Status: `v0.2.0` — complete local dev loop (forward, CLI, 6 providers, replay upgrades, GC + rate limits). See [PLAN.md](PLAN.md) for scope and [CHANGELOG.md](CHANGELOG.md) for releases.
+> Status: `v0.2.0` — complete local dev loop (forward, CLI, 6 providers, replay upgrades, GC + rate limits). See [CHANGELOG.md](CHANGELOG.md) for releases and [docs/MANUAL-TEST.md](docs/MANUAL-TEST.md) to try it.
 
 ## Why
 

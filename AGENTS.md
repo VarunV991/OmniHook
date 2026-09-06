@@ -7,7 +7,7 @@ Read this first. It saves you from the traps already discovered here.
 OmniHook: local-first universal webhook inbox. Single Go binary + SQLite (WAL) + embedded
 single-page UI. Captures `ALL /hook/:slug/*` preserving **raw bytes**, verifies HMAC
 signatures (Stripe, GitHub, Standard Webhooks, Razorpay, Generic), serves a live SSE inbox,
-and replays exact bytes to localhost. MIT. Full spec: `PLAN.md`.
+and replays exact bytes to localhost. MIT. Full spec: `README.md` + `docs/PROVIDERS.md`.
 
 ## 2. Branching (strict develop → main)
 
@@ -68,9 +68,10 @@ go run ./cmd/omnihook up                  # foreground only (see §4)
 
 ## 6. Docs to keep in sync with every feature PR
 
-- `PLAN.md` §2 scope table (move Deferred → P0 when scoped).
 - `CHANGELOG.md` Unreleased section.
-- `README.md` config table / quickstart if flags or endpoints change.
+- `README.md` config table / quickstart / layout if flags, endpoints, env vars, or packages change.
+- Scope tracking lives in GitHub issues (labels + milestone), not a plan doc.
+- `docs/` guides (`PROVIDERS.md`, `MANUAL-TEST.md`, `LAUNCH.md`) when behavior they describe changes.
 
 ## 7. Release checklist (maintainer only, on `develop` when green)
 
