@@ -5,4 +5,4 @@
 - [ ] `CHANGELOG.md` `[Unreleased]` has an entry (enforced by `checkdocs` in CI)
 - [ ] `README.md` updated if flags, endpoints, env vars, or quickstart changed (env table enforced by `checkdocs`)
 - [ ] `AGENTS.md` updated if branching, sandbox, conventions, or repo layout changed
-- [ ] `PLAN.md` §2 scope table updated if scope moved (P0 ↔ Deferred)
+- [ ] Scope tracked in a GitHub issue (linked, labeled)
