@@ -5,6 +5,16 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 
 ## [Unreleased] (develop)
 
+Added:
+- Forward worker (`internal/forward`): endpoints with `target_url` auto-forward
+  captured requests (method, original headers, raw bytes) async with 10s timeout;
+  `X-Omnihook-Forward` + `X-Omnihook-Request-Id` headers; outcome recorded in
+  `replays`; provider response never fails because forwarding failed; SSRF guard
+  blocks cloud metadata hosts. Regression tests: success/bytes/headers recorded,
+  broken target still captures 200.
+- Docs-freshness automation: `scripts/checkdocs` (CHANGELOG + README env-table gates),
+  `make verify` regression gate, PR template checklist; CI runs `make verify`.
+
 ## [v0.1.0] - 2026-09-06
 First runnable release. Single Go binary + SQLite + embedded inbox UI (MIT).
 

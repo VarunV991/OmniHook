@@ -43,6 +43,19 @@ cloudflared tunnel --url http://localhost:8080
 PUBLIC_URL=https://<you>.trycloudflare.com go run ./cmd/omnihook up
 ```
 
+## Forwarding to localhost
+
+Set `target_url` on an endpoint and every capture is forwarded async (10s timeout)
+with original method, headers, and raw bytes, plus `X-Omnihook-Forward: true` and
+`X-Omnihook-Request-Id`. The provider always gets your configured mock response —
+forwarding can never break capture. Each attempt is recorded (status + latency);
+inspect via the UI replay panel or the `replays` table.
+
+```bash
+curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json' \
+  -d '{"slug":"proj1","provider":"stripe","target_url":"http://localhost:3000/webhooks/stripe"}'
+```
+
 ## Signature verification (the useful part)
 
 Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Generic HMAC**. Auto-detected from headers or pinned per endpoint. Every `FAIL` ships a fix hint:
@@ -57,7 +70,8 @@ Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), 
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `PORT` | `8080` | HTTP port (UI + API + capture) |
-| `DATA_DIR` | `./data` | SQLite lives here (`omnihook.db`) |
+| `DATA_DIR` | `./data` | SQLite lives here (`omnihook.db`) unless `DATABASE_URL` is set |
+| `DATABASE_URL` | unset | Full SQLite path; overrides `DATA_DIR/omnihook.db` when set |
 | `RETENTION_HOURS` | `168` | GC window for old requests |
 | `MAX_BODY_BYTES` | `1048576` | Bodies above this are truncated (flagged) |
 | `ACCESS_TOKEN` | unset | Gates UI + `/api/*`; `/hook/*` stays public by design |
@@ -71,6 +85,7 @@ internal/config     env config
 internal/db         SQLite open + migrate (WAL)
 internal/verify     stripe|github|standard|razorpay|generic + chain
 internal/capture    raw-body capture handler + SSE hub
+internal/forward    async forward worker (records to replays, SSRF-guarded)
 internal/replay     replay client with SSRF guard
 internal/api        REST + SSE + UI server (+ hermetic tests)
 web/                single-page inbox UI

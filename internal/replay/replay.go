@@ -36,6 +36,10 @@ func blocked(target string) bool {
 	return false
 }
 
+// Blocked reports whether target is barred by the SSRF guard.
+// Localhost is allowed by design (forwarding to local dev is the product).
+func Blocked(target string) bool { return blocked(target) }
+
 // Send replays a stored request body to target, records result.
 func Send(db *sql.DB, requestID, target string, headerOverride map[string]string, bodyOverride []byte) (int, int64, string) {
 	if blocked(target) {
