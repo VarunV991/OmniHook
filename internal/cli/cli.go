@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/you/omnihook/internal/api"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/gc"
 	"github.com/you/omnihook/internal/replay"
@@ -63,7 +64,7 @@ func usage(w io.Writer) {
   new <slug> [--provider NAME --secret S --target URL]  create capture endpoint
   list [--json]                                          list endpoints
   show <request-id> [--json]                             show captured request
-  replay <request-id> --target URL [--edit-body @file] [--header K=V]...
+  replay <request-id> --target URL [--edit-body @file] [--header K=V]... [--times N] [--delay-ms MS] [--resign]
   verify --provider NAME --secret S --headers @h.json --body @b.bin
   gc [--retention-hours N]                               delete old requests
   up [--port P]                                          serve UI + API + capture
@@ -73,8 +74,10 @@ func usage(w io.Writer) {
 // parseMixed parses flags anywhere in args (Go's flag package stops at the
 // first positional, so `replay <id> --target X` would silently ignore the flag).
 // Space-separated values (`--target X`) stay attached to their flag; boolean
-// flags and `--k=v` forms work as usual. Returns the positional args.
-func parseMixed(fs *flag.FlagSet, args []string) []string {
+// flags and `--k=v` forms work as usual. Returns the positional args plus
+// whether flag parsing succeeded (unknown flags fail instead of running
+// the command with silently-wrong defaults).
+func parseMixed(fs *flag.FlagSet, args []string) ([]string, bool) {
 	var flags, pos []string
 	i := 0
 	for i < len(args) {
@@ -103,8 +106,10 @@ func parseMixed(fs *flag.FlagSet, args []string) []string {
 		pos = append(pos, a)
 		i++
 	}
-	_ = fs.Parse(flags)
-	return pos
+	if err := fs.Parse(flags); err != nil {
+		return nil, false
+	}
+	return pos, true
 }
 
 func needDB(db *sql.DB, stderr io.Writer) bool {
@@ -121,7 +126,10 @@ func cmdNew(db *sql.DB, cfg config.Config, args []string, stdout, stderr io.Writ
 	provider := fs.String("provider", "generic", "provider: stripe|github|standard|razorpay|shopify|generic")
 	secret := fs.String("secret", "", "webhook signing secret")
 	target := fs.String("target", "", "forward target URL (e.g. http://localhost:3000/hook)")
-	pos := parseMixed(fs, args)
+	pos, ok := parseMixed(fs, args)
+	if !ok {
+		return ExitError
+	}
 	if !needDB(db, stderr) {
 		return ExitError
 	}
@@ -130,7 +138,12 @@ func cmdNew(db *sql.DB, cfg config.Config, args []string, stdout, stderr io.Writ
 		return ExitError
 	}
 	slug := pos[0]
-	if _, err := db.Exec(`INSERT INTO endpoints(slug,name,provider,secret_ref,target_url) VALUES(?,?,?,?,?)`,
+	if !api.ValidSlug(slug) {
+		fmt.Fprintln(stderr, "slug must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+		return ExitError
+	}
+	if _, err := db.Exec(`INSERT INTO endpoints(slug,name,provider,secret_ref,target_url) VALUES(?,?,?,?,?)
+		ON CONFLICT(slug) DO UPDATE SET provider=excluded.provider, secret_ref=excluded.secret_ref, target_url=excluded.target_url`,
 		slug, slug, *provider, *secret, *target); err != nil {
 		fmt.Fprintf(stderr, "create endpoint: %v\n", err)
 		return ExitError
@@ -193,7 +206,10 @@ func cmdShow(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "full JSON output")
-	pos := parseMixed(fs, args)
+	pos, ok := parseMixed(fs, args)
+	if !ok {
+		return ExitError
+	}
 	if !needDB(db, stderr) {
 		return ExitError
 	}
@@ -248,7 +264,10 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	resign := fs.Bool("resign", false, "refresh time-sensitive signatures with endpoint secret so old captures verify PASS")
 	var headers multiFlag
 	fs.Var(&headers, "header", "override/add header K=V (repeatable)")
-	pos := parseMixed(fs, args)
+	pos, ok := parseMixed(fs, args)
+	if !ok {
+		return ExitError
+	}
 	if !needDB(db, stderr) {
 		return ExitError
 	}

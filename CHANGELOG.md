@@ -6,6 +6,13 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- Review hardening: SSE fan-out Hub (every tab gets every event), UI XSS
+  escaping + token prompt + error surfaces, endpoint GET/PATCH/DELETE and
+  request DELETE APIs, `new` upsert (CLI + API), slug charset validation
+  (shared `api.ValidSlug`), unknown CLI flags fail, `up` rejects positionals,
+  untagged builds report `dev` version, replay records SSRF blocks and sends
+  single Content-Type, forward skips FK-violating records, checkdocs
+  schema-sync gate (migrations ↔ inline schema).
 - GC + rate limiting (closes #4): `internal/gc` shared by one-shot `omnihook gc`
   and the server's hourly scheduler; `RATE_LIMIT_RPS` (default 50, 0 disables)
   token-bucket per IP on capture — over-limit requests are still stored as

@@ -33,9 +33,8 @@ func Deliver(db *sql.DB, requestID, target string) (statusCode int, latencyMs in
 	var body []byte
 	if err := db.QueryRow(`SELECT method, content_type, headers, body FROM requests WHERE id=?`, requestID).
 		Scan(&method, &contentType, &headersJSON, &body); err != nil {
-		errMsg = "request not found: " + requestID
-		record(db, requestID, target, 0, 0, errMsg)
-		return 0, 0, errMsg
+		// No record: request_id would violate the replays FK; nothing to audit.
+		return 0, 0, "request not found: " + requestID
 	}
 	client := &http.Client{Timeout: timeout}
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))

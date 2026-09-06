@@ -65,3 +65,43 @@ func TestRateLimitDisabled(t *testing.T) {
 		}
 	}
 }
+
+func TestHubFansOutToAllSubscribers(t *testing.T) {
+	hub := NewHub()
+	a, unsubA := hub.Subscribe()
+	defer unsubA()
+	b, unsubB := hub.Subscribe()
+	defer unsubB()
+	hub.Broadcast("id-1")
+	hub.Broadcast("id-2")
+	for _, ch := range []chan string{a, b} {
+		for _, want := range []string{"id-1", "id-2"} {
+			select {
+			case got := <-ch:
+				if got != want {
+					t.Fatalf("got %q want %q", got, want)
+				}
+			default:
+				t.Fatal("subscriber missed broadcast")
+			}
+		}
+	}
+	// Unsubscribed client receives nothing further.
+	unsubB()
+	hub.Broadcast("id-3")
+	select {
+	case got := <-a:
+		if got != "id-3" {
+			t.Fatalf("got %q", got)
+		}
+	default:
+		t.Fatal("remaining subscriber missed broadcast")
+	}
+	// Unsubscribed client receives nothing further (channel is dropped, not
+	// closed, so concurrent Broadcast can never panic on send-to-closed).
+	select {
+	case got := <-b:
+		t.Fatalf("unsubscribed got %q", got)
+	default:
+	}
+}
