@@ -5,6 +5,8 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 
 ## [Unreleased] (develop)
 
+## [v0.2.0] - 2026-09-06
+
 Added:
 - Review hardening: SSE fan-out Hub (every tab gets every event), UI XSS
   escaping + token prompt + error surfaces, endpoint GET/PATCH/DELETE and
