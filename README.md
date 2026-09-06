@@ -43,6 +43,23 @@ cloudflared tunnel --url http://localhost:8080
 PUBLIC_URL=https://<you>.trycloudflare.com go run ./cmd/omnihook up
 ```
 
+## CLI
+
+Everything works offline against the local DB file — no server needed except `up`:
+
+```bash
+omnihook new stripe1 --provider stripe --secret whsec_... --target http://localhost:3000/hook
+omnihook list
+omnihook show <request-id>
+omnihook replay <request-id> --target http://localhost:3000/hook --header X-Debug=1
+omnihook verify --provider stripe --secret whsec_... --headers @h.json --body @b.bin  # exit 0 PASS, 2 FAIL
+omnihook gc --retention-hours 48
+omnihook up --port 8080
+```
+
+Flags may come before or after the positional arg. Per-provider setup, payload
+samples, and the verified test matrix: [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
 ## Forwarding to localhost
 
 Set `target_url` on an endpoint and every capture is forwarded async (10s timeout)
