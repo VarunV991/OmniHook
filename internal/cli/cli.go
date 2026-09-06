@@ -242,6 +242,9 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	target := fs.String("target", "", "destination URL (required)")
 	editBody := fs.String("edit-body", "", "replace body with file contents (@path or - for stdin)")
+	times := fs.Int("times", 1, "repeat replay N times (max 50)")
+	delayMs := fs.Int("delay-ms", 0, "delay between repeats in ms")
+	resign := fs.Bool("resign", false, "refresh time-sensitive signatures with endpoint secret so old captures verify PASS")
 	var headers multiFlag
 	fs.Var(&headers, "header", "override/add header K=V (repeatable)")
 	pos := parseMixed(fs, args)
@@ -249,7 +252,11 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 		return ExitError
 	}
 	if len(pos) < 1 || *target == "" {
-		fmt.Fprintln(stderr, "usage: omnihook replay <request-id> --target URL [--edit-body @file] [--header K=V]...")
+		fmt.Fprintln(stderr, "usage: omnihook replay <request-id> --target URL [--edit-body @file] [--header K=V]... [--times N] [--delay-ms MS] [--resign]")
+		return ExitError
+	}
+	if *times < 1 || *times > 50 {
+		fmt.Fprintln(stderr, "times must be 1..50")
 		return ExitError
 	}
 	var bodyOverride []byte
@@ -270,9 +277,28 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 		}
 		overrides[strings.TrimSpace(k)] = strings.TrimSpace(v)
 	}
-	code, lat, resp := replay.Send(db, pos[0], *target, overrides, bodyOverride)
-	fmt.Fprintf(stdout, "status=%d latency_ms=%d\n%s\n", code, lat, truncate(resp, 2000))
-	if code == 0 {
+	if *times == 1 && !*resign {
+		code, lat, resp := replay.Send(db, pos[0], *target, overrides, bodyOverride)
+		fmt.Fprintf(stdout, "status=%d latency_ms=%d\n%s\n", code, lat, truncate(resp, 2000))
+		if code == 0 {
+			return ExitError
+		}
+		return ExitOK
+	}
+	// Extended path: resign and/or repeats.
+	opts := replay.Options{Headers: overrides, Body: bodyOverride, Resign: *resign}
+	failed := false
+	for i := 0; i < *times; i++ {
+		if i > 0 && *delayMs > 0 {
+			time.Sleep(time.Duration(*delayMs) * time.Millisecond)
+		}
+		c, l, _ := replay.SendWithOptions(db, pos[0], *target, opts)
+		fmt.Fprintf(stdout, "[%d/%d] status=%d latency_ms=%d\n", i+1, *times, c, l)
+		if c == 0 {
+			failed = true
+		}
+	}
+	if failed {
 		return ExitError
 	}
 	return ExitOK
