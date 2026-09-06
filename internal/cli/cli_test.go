@@ -133,6 +133,28 @@ func TestNewRejectsBadSlug(t *testing.T) {
 	}
 }
 
+func TestNewExplicitFieldsAndEnum(t *testing.T) {
+	sqldb, cfg := testSetup(t)
+	var out, errBuf bytes.Buffer
+	if code := Run(sqldb, cfg, []string{"new", "bad", "--provider", "strip"}, &out, &errBuf); code != ExitError {
+		t.Fatalf("exit=%d, want error for unknown provider", code)
+	}
+	runOK(t, sqldb, cfg, "new", "ex1", "--provider", "stripe", "--secret", "whsec_keep")
+	// Re-run with slug only: must not destroy stored secret.
+	runOK(t, sqldb, cfg, "new", "ex1")
+	var provider, secret string
+	_ = sqldb.QueryRow(`SELECT provider, secret_ref FROM endpoints WHERE slug='ex1'`).Scan(&provider, &secret)
+	if provider != "stripe" || secret != "whsec_keep" {
+		t.Fatalf("re-new destroyed config: %q %q", provider, secret)
+	}
+	// Explicit empty clears.
+	runOK(t, sqldb, cfg, "new", "ex1", "--secret", "")
+	_ = sqldb.QueryRow(`SELECT secret_ref FROM endpoints WHERE slug='ex1'`).Scan(&secret)
+	if secret != "" {
+		t.Fatalf("explicit empty did not clear: %q", secret)
+	}
+}
+
 func TestListJSONShape(t *testing.T) {
 	sqldb, cfg := testSetup(t)
 	runOK(t, sqldb, cfg, "new", "j1", "--provider", "github")

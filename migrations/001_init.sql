@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS requests (
   verify_status TEXT NOT NULL DEFAULT 'SKIPPED',
   verify_error TEXT NOT NULL DEFAULT '',
   fix_hint TEXT NOT NULL DEFAULT '',
+  verified_by TEXT NOT NULL DEFAULT '',
   received_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_requests_slug_time ON requests(endpoint_slug, received_at DESC);

@@ -29,7 +29,10 @@ func TestRefreshSignaturesRoundTrip(t *testing.T) {
 			if provider == "standard-svix" {
 				provider = "standard"
 			}
-			fresh := RefreshSignatures(provider, tc.secret, tc.headers, tc.body, now)
+			fresh, err := RefreshSignatures(provider, tc.secret, tc.headers, tc.body, now)
+			if err != nil {
+				t.Fatalf("resign: %v", err)
+			}
 			if len(fresh) == 0 {
 				t.Fatal("no refreshed headers")
 			}
@@ -49,10 +52,16 @@ func TestRefreshSignaturesRoundTrip(t *testing.T) {
 }
 
 func TestRefreshUnknownAndEmpty(t *testing.T) {
-	if m := RefreshSignatures("nope", "s", nil, []byte(`{}`), time.Now()); len(m) != 0 {
-		t.Fatalf("unknown provider: %v", m)
+	if _, err := RefreshSignatures("nope", "s", nil, []byte(`{}`), time.Now()); err == nil {
+		t.Fatal("unknown provider must error")
 	}
-	if m := RefreshSignatures("stripe", "", nil, []byte(`{}`), time.Now()); len(m) != 0 {
-		t.Fatal("empty secret must yield nothing")
+	if _, err := RefreshSignatures("stripe", "", nil, []byte(`{}`), time.Now()); err == nil {
+		t.Fatal("empty secret must error")
+	}
+	if _, err := RefreshSignatures("generic", "s", nil, []byte(`{}`), time.Now()); err == nil {
+		t.Fatal("generic provider must error")
+	}
+	if _, err := RefreshSignatures("standard", "whsec_"+b64([]byte("resign-key-12345678901234567890")), map[string]string{}, []byte(`{}`), time.Now()); err == nil {
+		t.Fatal("missing webhook id must error")
 	}
 }

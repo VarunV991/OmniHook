@@ -29,6 +29,7 @@ Troubleshooting:
 - `timestamp outside 5-min tolerance` → clock skew (NTP) or replaying an old capture (expected — re-capture fresh).
 - CLI drill: save headers/body from `omnihook show <id> --json`, then `omnihook verify --provider stripe --secret whsec_... --headers @h.json --body @b.bin` (exit 0 PASS, 2 FAIL).
 - Old captures fail timestamp tolerance by design — replay with `--resign` (CLI), `resign:true` (API), or the UI checkbox to re-sign with the endpoint secret and verify PASS again.
+- Binary payloads: `body_text` is UTF-8 lossy. Use `GET /api/requests/<id>/body` (raw bytes), `body_base64` in detail JSON, or `omnihook show <id> --raw out.bin` for byte-identical export.
 
 ## 2. GitHub — `push`, `pull_request`, `workflow_run`
 

@@ -7,11 +7,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/you/omnihook/internal/outbound"
 	"github.com/you/omnihook/internal/verify"
 )
 
@@ -59,12 +61,13 @@ type Options struct {
 // SendWithOptions replays with Options. Explicit Headers win over resigned
 // headers; resigned headers win over stored originals.
 func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, int64, string) {
-	var method, contentType, headersJSON, provider, secret string
+	var method, contentType, headersJSON, provider, secret, verifiedBy string
 	var body []byte
 	err := db.QueryRow(`SELECT r.method, r.content_type, r.headers, r.body,
-		COALESCE(e.provider,'generic'), COALESCE(e.secret_ref,'')
+		COALESCE(e.provider,'generic'), COALESCE(e.secret_ref,''),
+		COALESCE(r.verified_by,'')
 		FROM requests r LEFT JOIN endpoints e ON e.slug=r.endpoint_slug WHERE r.id=?`,
-		requestID).Scan(&method, &contentType, &headersJSON, &body, &provider, &secret)
+		requestID).Scan(&method, &contentType, &headersJSON, &body, &provider, &secret, &verifiedBy)
 	if err != nil {
 		return 0, 0, "request not found: " + requestID
 	}
@@ -87,14 +90,27 @@ func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, i
 	}
 	merged := map[string]string{}
 	if opts.Resign {
-		for k, v := range verify.RefreshSignatures(provider, secret, flat, body, time.Now()) {
-			merged[k] = v
+		// Prefer the provider actually detected at capture; fall back to the
+		// endpoint's configured provider (covers rows predating verified_by).
+		effective := verifiedBy
+		if effective == "" || effective == "generic" {
+			effective = provider
+		}
+		fresh, err := verify.RefreshSignatures(effective, secret, flat, body, time.Now())
+		if err != nil {
+			msg := "resign unavailable: " + err.Error()
+			_, _ = db.Exec(`INSERT INTO replays(id, request_id, target_url, status_code, latency_ms, error) VALUES(?,?,?,?,?,?)`,
+				uuid.NewString(), requestID, target, 0, 0, msg)
+			return 0, 0, msg
+		}
+		for k, v := range fresh {
+			merged[textproto.CanonicalMIMEHeaderKey(k)] = v
 		}
 	}
 	for k, v := range opts.Headers {
-		merged[k] = v
+		merged[textproto.CanonicalMIMEHeaderKey(k)] = v
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := outbound.Client(15 * time.Second)
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))
 	if err != nil {
 		return 0, 0, err.Error()
@@ -122,6 +138,8 @@ func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, i
 		}
 		req.Header.Set(k, v)
 	}
+	// Connection-scoped headers belong to the original connection, not the replay.
+	outbound.StripHopByHop(req.Header)
 	start := time.Now()
 	resp, err := client.Do(req)
 	lat := time.Since(start).Milliseconds()

@@ -6,6 +6,13 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- C fidelity: Stripe multi-signature accept-any; provider enum validation +
+  `auto`; effective provider persisted (`verified_by`, migration 002) and used
+  for re-sign, with explicit re-sign errors; canonical GC timestamps + boundary
+  tests; shared outbound policy (no redirect following, hop-by-hop stripping);
+  raw body export (API `/body`, `body_base64`, CLI `--raw`); replay 404/400
+  validation, 5-min batch deadline, empty-body overrides; explicit-fields-only
+  upsert (API + CLI); canonical header merge; oversized bodies 413-rejected.
 - B installable UI + setup UX: `internal/webui` embeds inbox + login pages in
   the binary (plus `WEB_DIR` dev override); endpoint create form
   (provider/secret/target), copyable capture URLs, replay target prefill,
