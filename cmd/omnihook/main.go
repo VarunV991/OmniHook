@@ -28,6 +28,10 @@ func main() {
 
 func run(args []string) int {
 	cfg := config.Load(version)
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, "invalid config:", err)
+		return cli.ExitError
+	}
 	if len(args) == 0 {
 		args = []string{"up"}
 	}
