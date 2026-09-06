@@ -117,7 +117,7 @@ func needDB(db *sql.DB, stderr io.Writer) bool {
 func cmdNew(db *sql.DB, cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("new", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	provider := fs.String("provider", "generic", "provider: stripe|github|standard|razorpay|generic")
+	provider := fs.String("provider", "generic", "provider: stripe|github|standard|razorpay|shopify|generic")
 	secret := fs.String("secret", "", "webhook signing secret")
 	target := fs.String("target", "", "forward target URL (e.g. http://localhost:3000/hook)")
 	pos := parseMixed(fs, args)
@@ -281,7 +281,7 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 func cmdVerify(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	provider := fs.String("provider", "", "stripe|github|standard|razorpay|generic (required)")
+	provider := fs.String("provider", "", "stripe|github|standard|razorpay|shopify|generic (required)")
 	secret := fs.String("secret", "", "signing secret (required)")
 	headersPath := fs.String("headers", "", "JSON headers file: @path or - for stdin (required)")
 	bodyPath := fs.String("body", "", "raw body file: @path or - for stdin (required)")
