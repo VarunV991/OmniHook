@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/you/omnihook/internal/verify"
 )
 
 var blockedHosts = []string{"169.254.169.254", "metadata.google.internal", "metadata.google", "instance-data"}
@@ -42,17 +44,52 @@ func Blocked(target string) bool { return blocked(target) }
 
 // Send replays a stored request body to target, records result.
 func Send(db *sql.DB, requestID, target string, headerOverride map[string]string, bodyOverride []byte) (int, int64, string) {
+	return SendWithOptions(db, requestID, target, Options{Headers: headerOverride, Body: bodyOverride})
+}
+
+// Options extends Send with re-signing: refresh time-sensitive signature
+// headers (Stripe/Standard/...) using the endpoint secret so old captures
+// replay as PASS instead of failing timestamp tolerance.
+type Options struct {
+	Headers map[string]string
+	Body    []byte
+	Resign  bool
+}
+
+// SendWithOptions replays with Options. Explicit Headers win over resigned
+// headers; resigned headers win over stored originals.
+func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, int64, string) {
 	if blocked(target) {
 		return 0, 0, "blocked: SSRF guard (metadata host)"
 	}
-	var method, contentType string
+	var method, contentType, headersJSON, provider, secret string
 	var body []byte
-	err := db.QueryRow(`SELECT method, content_type, body FROM requests WHERE id=?`, requestID).Scan(&method, &contentType, &body)
+	err := db.QueryRow(`SELECT r.method, r.content_type, r.headers, r.body,
+		COALESCE(e.provider,'generic'), COALESCE(e.secret_ref,'')
+		FROM requests r LEFT JOIN endpoints e ON e.slug=r.endpoint_slug WHERE r.id=?`,
+		requestID).Scan(&method, &contentType, &headersJSON, &body, &provider, &secret)
 	if err != nil {
 		return 0, 0, "request not found: " + requestID
 	}
-	if bodyOverride != nil {
-		body = bodyOverride
+	if opts.Body != nil {
+		body = opts.Body
+	}
+	var stored http.Header
+	if headersJSON != "" {
+		_ = json.Unmarshal([]byte(headersJSON), &stored)
+	}
+	flat := map[string]string{}
+	for k, vv := range stored {
+		flat[k] = strings.Join(vv, ", ")
+	}
+	merged := map[string]string{}
+	if opts.Resign {
+		for k, v := range verify.RefreshSignatures(provider, secret, flat, body, time.Now()) {
+			merged[k] = v
+		}
+	}
+	for k, v := range opts.Headers {
+		merged[k] = v
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))
@@ -62,9 +99,19 @@ func Send(db *sql.DB, requestID, target string, headerOverride map[string]string
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	// Restore original headers so the replay is byte-faithful, then apply
+	// resigned/explicit overrides on top.
+	for k, vv := range stored {
+		if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") {
+			continue
+		}
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
 	req.Header.Set("X-Omnihook-Replay", "true")
 	req.Header.Set("X-Omnihook-Request-Id", requestID)
-	for k, v := range headerOverride {
+	for k, v := range merged {
 		if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") {
 			continue
 		}

@@ -28,6 +28,7 @@ Troubleshooting:
 - `signature mismatch` → you parsed JSON before verifying. Express: `express.raw({type:'application/json'})`; Spring Boot: `@RequestBody byte[] raw`; FastAPI: `await request.body()`; Django: `request.body`.
 - `timestamp outside 5-min tolerance` → clock skew (NTP) or replaying an old capture (expected — re-capture fresh).
 - CLI drill: save headers/body from `omnihook show <id> --json`, then `omnihook verify --provider stripe --secret whsec_... --headers @h.json --body @b.bin` (exit 0 PASS, 2 FAIL).
+- Old captures fail timestamp tolerance by design — replay with `--resign` (CLI), `resign:true` (API), or the UI checkbox to re-sign with the endpoint secret and verify PASS again.
 
 ## 2. GitHub — `push`, `pull_request`, `workflow_run`
 

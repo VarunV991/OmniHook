@@ -169,3 +169,31 @@ func TestVerifyCommandPassAndFail(t *testing.T) {
 		t.Fatalf("missing fix hint: %q", out.String())
 	}
 }
+
+func TestReplayTimesAndResign(t *testing.T) {
+	sqldb, cfg := testSetup(t)
+	runOK(t, sqldb, cfg, "new", "multi1", "--provider", "stripe", "--secret", "whsec_multi")
+	hj, _ := json.Marshal(map[string][]string{"Stripe-Signature": {"t=100,v1=deadbeef"}})
+	if _, err := sqldb.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, headers, content_type, body, body_size)
+		VALUES('m-old','multi1','POST','/',?,?,?,7)`, string(hj), "application/json", []byte(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	var hits int
+	var lastSig string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		lastSig = r.Header.Get("Stripe-Signature")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	out := runOK(t, sqldb, cfg, "replay", "m-old", "--target", target.URL, "--times", "3", "--resign")
+	if !strings.Contains(out, "[3/3] status=200") {
+		t.Fatalf("output: %q", out)
+	}
+	if hits != 3 {
+		t.Fatalf("hits = %d", hits)
+	}
+	if lastSig == "" || lastSig == "t=100,v1=deadbeef" {
+		t.Fatalf("not resigned: %q", lastSig)
+	}
+}

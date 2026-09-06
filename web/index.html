@@ -56,11 +56,16 @@ async function show(id){
    (q.fix_hint?`<div class="hint"><b>Fix:</b> ${q.fix_hint}</div>`:'')+
    `<h4>Headers</h4><pre>${JSON.stringify(JSON.parse(q.headers||'{}'),null,2)}</pre>`+
    `<h4>Body</h4><pre>${(q.body_text||'').slice(0,20000)}</pre>`+
-   `<h4>Replay</h4><input id="t" value="http://localhost:3000/webhooks/stripe" placeholder="target localhost URL"/><button onclick="replay('${q.id}')">Replay</button><pre id="rout"></pre>`;
+   `<h4>Replay</h4><input id="t" value="http://localhost:3000/webhooks/stripe" placeholder="target localhost URL"/>`+
+   `<div><label>times <input id="tn" type="number" value="1" min="1" max="50" style="width:80px"/></label> `+
+   `<label><input id="rs" type="checkbox"/> re-sign (refresh timestamps with endpoint secret)</label></div>`+
+   `<button onclick="replay('${q.id}')">Replay</button><pre id="rout"></pre>`;
 }
 async function replay(id){
   const target=document.getElementById('t').value;
-  const r=await api('/api/requests/'+id+'/replay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target})});
+  const times=Math.min(50,Math.max(1,parseInt(document.getElementById('tn').value||'1',10)));
+  const resign=document.getElementById('rs').checked;
+  const r=await api('/api/requests/'+id+'/replay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target,times,resign})});
   document.getElementById('rout').textContent=JSON.stringify(r,null,2);
 }
 async function newEndpoint(){

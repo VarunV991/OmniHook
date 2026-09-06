@@ -2,10 +2,12 @@ package api
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/you/omnihook/internal/capture"
@@ -191,15 +193,55 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(rest, "/replay") && r.Method == "POST" {
 		id := strings.TrimSuffix(rest, "/replay")
 		var in struct {
-			Target string `json:"target"`
+			Target  string            `json:"target"`
+			Headers map[string]string `json:"headers"`
+			BodyB64 string            `json:"body_base64"`
+			Times   int               `json:"times"`
+			DelayMs int               `json:"delay_ms"`
+			Resign  bool              `json:"resign"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		if in.Target == "" {
 			http.Error(w, "target required", 400)
 			return
 		}
-		code, lat, body := replay.Send(s.DB, id, in.Target, nil, nil)
-		writeJSON(w, map[string]any{"status_code": code, "latency_ms": lat, "body": body})
+		times := in.Times
+		if times < 1 {
+			times = 1
+		}
+		if times > 50 {
+			http.Error(w, "times capped at 50", 400)
+			return
+		}
+		var bodyOverride []byte
+		if in.BodyB64 != "" {
+			var err error
+			bodyOverride, err = base64.StdEncoding.DecodeString(in.BodyB64)
+			if err != nil {
+				http.Error(w, "body_base64: invalid base64", 400)
+				return
+			}
+		}
+		results := make([]map[string]any, 0, times)
+		for i := 0; i < times; i++ {
+			if i > 0 && in.DelayMs > 0 {
+				select {
+				case <-r.Context().Done():
+					writeJSON(w, map[string]any{"results": results, "cancelled": true})
+					return
+				case <-time.After(time.Duration(in.DelayMs) * time.Millisecond):
+				}
+			}
+			code, lat, body := replay.SendWithOptions(s.DB, id, in.Target,
+				replay.Options{Headers: in.Headers, Body: bodyOverride, Resign: in.Resign})
+			results = append(results, map[string]any{"status_code": code, "latency_ms": lat, "body": body})
+		}
+		// Backward compat: single replay keeps the flat shape.
+		if times == 1 {
+			writeJSON(w, results[0])
+			return
+		}
+		writeJSON(w, map[string]any{"results": results})
 		return
 	}
 	id := rest

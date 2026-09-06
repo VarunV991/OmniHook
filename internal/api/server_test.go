@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/you/omnihook/internal/capture"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/db"
+	"github.com/you/omnihook/internal/verify"
 )
 
 // newTestServer spins up the full stack (SQLite temp file + handlers) in-process.
@@ -120,6 +122,55 @@ func TestCaptureListReplayLoop(t *testing.T) {
 func TestMain(m *testing.M) {
 	_ = os.Setenv("DATA_DIR", os.TempDir())
 	os.Exit(m.Run())
+}
+
+// Replay upgrades: times=N returns a results array; resign refreshes a stale
+// Stripe signature so the target sees a verifiable PASS.
+func TestReplayTimesAndResign(t *testing.T) {
+	s := newTestServer(t)
+	createBody, _ := json.Marshal(map[string]string{
+		"slug": "rs1", "provider": "stripe", "secret": "whsec_api_resign",
+	})
+	req := httptest.NewRequest("POST", "/api/endpoints", bytes.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create endpoint = %d", rec.Code)
+	}
+	stale := `{"id":"evt_stale"}`
+	hj, _ := json.Marshal(map[string][]string{"Stripe-Signature": {"t=100,v1=deadbeef"}})
+	if _, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, headers, content_type, body, body_size)
+		VALUES('stale-1','rs1','POST','/',?,?,?,?)`, string(hj), "application/json", []byte(stale), len(stale)); err != nil {
+		t.Fatal(err)
+	}
+	var hits int
+	var lastSig string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		lastSig = r.Header.Get("Stripe-Signature")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	replayBody, _ := json.Marshal(map[string]any{"target": target.URL, "times": 2, "resign": true})
+	req = httptest.NewRequest("POST", "/api/requests/stale-1/replay", bytes.NewReader(replayBody))
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	results, ok := out["results"].([]any)
+	if !ok || len(results) != 2 {
+		t.Fatalf("results = %s", rec.Body.String())
+	}
+	if hits != 2 {
+		t.Fatalf("hits = %d", hits)
+	}
+	got := verify.Chain("whsec_api_resign", "stripe",
+		map[string]string{"Stripe-Signature": lastSig}, []byte(stale), time.Now())
+	if got.Status != verify.PASS {
+		t.Fatalf("resigned did not verify: %+v", got)
+	}
 }
 
 // Regression: a dead forward target must never fail the provider response.
