@@ -1,6 +1,10 @@
 # OmniHook — Plan of Action (v1 / MVP)
 
-Status: APPROVED FOR BUILD | Owner: solo-dev | Stack: Go + SQLite + embedded UI | License: MIT
+Status: v0.2.0 SHIPPED 2026-09-06 — all P0 scope items (F1–F10) plus extras
+(CLI, 6th/7th verifiers, re-sign, GC scheduler, rate limiting, review hardening)
+are on `main`. Only Deferred items remain open. Phases below are the historical
+build record; see CHANGELOG.md for what each release contained.
+Owner: solo-dev | Stack: Go + SQLite + embedded UI | License: MIT
 Repo name: `omnihook` | Binary: `omnihook` | Tagline: local-first universal webhook inbox — capture, verify, replay.
 
 ## 1. Overall requirement
