@@ -30,11 +30,16 @@ curl -s -X POST localhost:8080/api/requests/<id>/replay -H 'Content-Type: applic
   -d '{"target":"http://localhost:3000/webhooks/stripe"}'
 ```
 
-Docker:
+Docker (UI/API on :8080, token `changeme` — change it):
 
 ```bash
-docker compose up --build   # UI on :8080, data in ./data
+docker compose up --build
 ```
+
+Notes: data lives in a named volume (bind mounts need `chown 65532:65532`);
+from inside Compose, your host app is `http://host.docker.internal:3000/...`
+and the bundled echo target is `http://echo:3000`. UI developers can live-edit
+via `WEB_DIR=<repo>/internal/webui`.
 
 Public URL for real providers (bring your own tunnel, v1 has no hosted relay):
 
@@ -120,7 +125,7 @@ Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), 
 | `DATABASE_URL` | unset | Full SQLite path; overrides `DATA_DIR/omnihook.db` when set |
 | `RATE_LIMIT_RPS` | `50` | Capture responses per second per IP (`0` disables); over-limit requests are stored but answered `429 + Retry-After: 1` |
 | `RETENTION_HOURS` | `168` | GC window for old requests |
-| `MAX_BODY_BYTES` | `1048576` | Bodies above this are truncated (flagged) |
+| `MAX_BODY_BYTES` | `1048576` | Bodies above this are rejected with 413 (never truncated-and-verified) |
 | `ACCESS_TOKEN` | unset | Gates UI + `/api/*`; `/hook/*` stays public by design |
 | `PUBLIC_URL` | unset | Base URL rendered in capture URLs behind a tunnel |
 
@@ -139,8 +144,8 @@ omnihook/
 │   ├── gc/                retention cleanup (CLI one-shot + hourly scheduler)
 │   ├── ratelimit/         per-IP token bucket for capture responses
 │   ├── replay/            replay client (options, re-sign, SSRF guard)
-│   └── verify/            stripe|github|standard|razorpay|shopify|generic + chain + re-sign
-├── web/                   single-page inbox UI (index.html)
+│   ├── verify/            stripe|github|standard|razorpay|shopify|generic + chain + re-sign
+│   └── webui/             inbox + login UI, embedded in the binary (`WEB_DIR` overrides)
 ├── migrations/            idempotent SQL (source of truth; mirrored inline in db.go)
 ├── scripts/checkdocs/     docs-freshness gates (CHANGELOG, README env table, schema sync)
 ├── docs/                  PROVIDERS.md (connect guides + test results)

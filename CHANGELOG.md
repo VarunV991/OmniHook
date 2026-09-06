@@ -6,6 +6,11 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- B installable UI + setup UX: `internal/webui` embeds inbox + login pages in
+  the binary (plus `WEB_DIR` dev override); endpoint create form
+  (provider/secret/target), copyable capture URLs, replay target prefill,
+  verify reasons, delivery-attempt history API + UI panel; Docker data-volume
+  ownership, host connectivity docs, CI Compose smoke (health→create→capture).
 - A3 bounded delivery + shutdown: forward worker pool (8 workers, 128 queue;
   drops recorded, never silent); self-target refusal + marked-request loop
   breaker; http.Server timeouts with SIGINT/SIGTERM graceful shutdown
