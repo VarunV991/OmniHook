@@ -1,0 +1,18 @@
+services:
+  omnihook:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+      RETENTION_HOURS: "168"
+      # ACCESS_TOKEN: changeme
+      # PUBLIC_URL: https://your-tunnel.trycloudflare.com
+  # Example local target (echo server for replay testing):
+  # echo:
+  #   image: hashicorp/http-echo
+  #   command: ["-listen=:3000", "-text=ok"]
+  #   ports: ["3000:3000"]
