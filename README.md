@@ -43,9 +43,48 @@ cloudflared tunnel --url http://localhost:8080
 PUBLIC_URL=https://<you>.trycloudflare.com go run ./cmd/omnihook up
 ```
 
+## CLI
+
+Everything works offline against the local DB file — no server needed except `up`:
+
+```bash
+omnihook new stripe1 --provider stripe --secret whsec_... --target http://localhost:3000/hook
+omnihook list
+omnihook show <request-id>
+omnihook replay <request-id> --target http://localhost:3000/hook --header X-Debug=1 --times 5 --resign
+omnihook verify --provider stripe --secret whsec_... --headers @h.json --body @b.bin  # exit 0 PASS, 2 FAIL
+omnihook gc --retention-hours 48
+omnihook up --port 8080
+```
+
+Flags may come before or after the positional arg. Per-provider setup, payload
+samples, and the verified test matrix: [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+## Forwarding to localhost
+
+Set `target_url` on an endpoint and every capture is forwarded async (10s timeout)
+with original method, headers, and raw bytes, plus `X-Omnihook-Forward: true` and
+`X-Omnihook-Request-Id`. The provider always gets your configured mock response —
+forwarding can never break capture. Each attempt is recorded (status + latency);
+inspect via the UI replay panel or the `replays` table.
+
+```bash
+curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json' \
+  -d '{"slug":"proj1","provider":"stripe","target_url":"http://localhost:3000/webhooks/stripe"}'
+```
+
+### Endpoints, slugs, and limits
+
+- Slugs match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (same rule in CLI and API).
+- Full endpoint lifecycle: `GET/PATCH/DELETE /api/endpoints/:slug`,
+  `DELETE /api/endpoints/:slug/requests`, `DELETE /api/requests/:id`.
+  Re-running `omnihook new` (or `POST /api/endpoints`) upserts provider/secret/target.
+- Set `ACCESS_TOKEN` to gate the UI + API; the UI prompts once and remembers it.
+  `/hook/*` stays public by design.
+
 ## Signature verification (the useful part)
 
-Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Generic HMAC**. Auto-detected from headers or pinned per endpoint. Every `FAIL` ships a fix hint:
+Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Shopify** (`X-Shopify-Hmac-Sha256`, base64), **Generic HMAC**. Auto-detected from headers or pinned per endpoint. Every `FAIL` ships a fix hint:
 
 - Express: `app.post('/hook', express.raw({type:'application/json'}))` — never `express.json()` before HMAC.
 - Spring Boot: `@RequestBody byte[] raw` + `Mac.getInstance("HmacSHA256")`.
@@ -57,7 +96,9 @@ Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), 
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `PORT` | `8080` | HTTP port (UI + API + capture) |
-| `DATA_DIR` | `./data` | SQLite lives here (`omnihook.db`) |
+| `DATA_DIR` | `./data` | SQLite lives here (`omnihook.db`) unless `DATABASE_URL` is set |
+| `DATABASE_URL` | unset | Full SQLite path; overrides `DATA_DIR/omnihook.db` when set |
+| `RATE_LIMIT_RPS` | `50` | Capture responses per second per IP (`0` disables); over-limit requests are stored but answered `429 + Retry-After: 1` |
 | `RETENTION_HOURS` | `168` | GC window for old requests |
 | `MAX_BODY_BYTES` | `1048576` | Bodies above this are truncated (flagged) |
 | `ACCESS_TOKEN` | unset | Gates UI + `/api/*`; `/hook/*` stays public by design |
@@ -70,7 +111,10 @@ cmd/omnihook        binary entry (up|version)
 internal/config     env config
 internal/db         SQLite open + migrate (WAL)
 internal/verify     stripe|github|standard|razorpay|generic + chain
-internal/capture    raw-body capture handler + SSE hub
+internal/capture    raw-body capture handler + SSE hub + rate gate
+internal/forward    async forward worker (records to replays, SSRF-guarded)
+internal/gc         retention cleanup (CLI one-shot + hourly scheduler)
+internal/ratelimit  per-IP token bucket for capture responses
 internal/replay     replay client with SSRF guard
 internal/api        REST + SSE + UI server (+ hermetic tests)
 web/                single-page inbox UI

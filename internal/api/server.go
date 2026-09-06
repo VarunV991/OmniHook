@@ -2,15 +2,17 @@ package api
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/you/omnihook/internal/capture"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/replay"
-	"github.com/google/uuid"
 )
 
 // Server wires capture + management API + embedded UI.
@@ -63,6 +65,25 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ValidSlug constrains endpoint slugs to URL/router-safe characters so a
+// slug can never escape its /hook/:slug or /api/endpoints/:slug scope.
+// Shared with the CLI so both enforce identical rules.
+func ValidSlug(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+		if !ok {
+			return false
+		}
+	}
+	// First char must be alphanumeric (no leading -/_).
+	c := s[0]
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
 }
 
 func (s *Server) routes() {
@@ -122,10 +143,15 @@ func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		if in.Slug == "" {
 			in.Slug = uuid.NewString()[:8]
 		}
+		if !ValidSlug(in.Slug) {
+			http.Error(w, "slug must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", 400)
+			return
+		}
 		if in.Provider == "" {
 			in.Provider = "generic"
 		}
-		_, err := s.DB.Exec(`INSERT OR IGNORE INTO endpoints(slug,name,provider,secret_ref,target_url) VALUES(?,?,?,?,?)`,
+		_, err := s.DB.Exec(`INSERT INTO endpoints(slug,name,provider,secret_ref,target_url) VALUES(?,?,?,?,?)
+			ON CONFLICT(slug) DO UPDATE SET provider=excluded.provider, secret_ref=excluded.secret_ref, target_url=excluded.target_url`,
 			in.Slug, in.Slug, in.Provider, in.Secret, in.Target)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -145,6 +171,93 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/endpoints/")
 	parts := strings.Split(rest, "/")
 	slug := parts[0]
+	if len(parts) == 1 {
+		switch r.Method {
+		case "GET":
+			var name, provider, target string
+			var status int
+			if err := s.DB.QueryRow(`SELECT name, provider, target_url, response_status FROM endpoints WHERE slug=?`, slug).
+				Scan(&name, &provider, &target, &status); err != nil {
+				http.Error(w, "not found", 404)
+				return
+			}
+			writeJSON(w, map[string]any{"slug": slug, "name": name, "provider": provider, "target_url": target, "response_status": status})
+			return
+		case "PATCH":
+			var in struct {
+				Name       *string `json:"name"`
+				Provider   *string `json:"provider"`
+				Secret     *string `json:"secret"`
+				Target     *string `json:"target_url"`
+				RespStatus *int    `json:"response_status"`
+				RespBody   *string `json:"response_body"`
+				RespCtype  *string `json:"response_content_type"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				http.Error(w, "bad JSON", 400)
+				return
+			}
+			// Targeted updates only; secret can be set after auto-create.
+			updates := map[string]any{}
+			if in.Name != nil {
+				updates["name"] = *in.Name
+			}
+			if in.Provider != nil {
+				updates["provider"] = *in.Provider
+			}
+			if in.Secret != nil {
+				updates["secret_ref"] = *in.Secret
+			}
+			if in.Target != nil {
+				updates["target_url"] = *in.Target
+			}
+			if in.RespStatus != nil {
+				updates["response_status"] = *in.RespStatus
+			}
+			if in.RespBody != nil {
+				updates["response_body"] = *in.RespBody
+			}
+			if in.RespCtype != nil {
+				updates["response_content_type"] = *in.RespCtype
+			}
+			if len(updates) == 0 {
+				http.Error(w, "nothing to update", 400)
+				return
+			}
+			setParts := make([]string, 0, len(updates))
+			vals := make([]any, 0, len(updates)+1)
+			for col, v := range updates {
+				setParts = append(setParts, col+"=?")
+				vals = append(vals, v)
+			}
+			vals = append(vals, slug)
+			res, err := s.DB.Exec(`UPDATE endpoints SET `+strings.Join(setParts, ", ")+` WHERE slug=?`, vals...)
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				http.Error(w, "not found", 404)
+				return
+			}
+			writeJSON(w, map[string]string{"slug": slug, "updated": "true"})
+			return
+		case "DELETE":
+			res, err := s.DB.Exec(`DELETE FROM endpoints WHERE slug=?`, slug)
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				http.Error(w, "not found", 404)
+				return
+			}
+			writeJSON(w, map[string]string{"slug": slug, "deleted": "true"})
+			return
+		}
+		http.Error(w, "method not allowed", 405)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "requests" && r.Method == "GET" {
 		rows, _ := s.DB.Query(`SELECT id, method, path, verify_status, received_at FROM requests WHERE endpoint_slug=? ORDER BY received_at DESC LIMIT 50`, slug)
 		defer func() {
@@ -163,13 +276,24 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, out)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "requests" && r.Method == "DELETE" {
+		res, err := s.DB.Exec(`DELETE FROM requests WHERE endpoint_slug=?`, slug)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		n, _ := res.RowsAffected()
+		writeJSON(w, map[string]any{"slug": slug, "deleted": n})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "stream" {
 		// SSE live stream.
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		fl, _ := w.(http.Flusher)
-		ch := s.Cap.Hub.Chan()
+		ch, unsub := s.Cap.Hub.Subscribe()
+		defer unsub()
 		ctx := r.Context()
 		for {
 			select {
@@ -191,18 +315,75 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(rest, "/replay") && r.Method == "POST" {
 		id := strings.TrimSuffix(rest, "/replay")
 		var in struct {
-			Target string `json:"target"`
+			Target  string            `json:"target"`
+			Headers map[string]string `json:"headers"`
+			BodyB64 string            `json:"body_base64"`
+			Times   int               `json:"times"`
+			DelayMs int               `json:"delay_ms"`
+			Resign  bool              `json:"resign"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		if in.Target == "" {
 			http.Error(w, "target required", 400)
 			return
 		}
-		code, lat, body := replay.Send(s.DB, id, in.Target, nil, nil)
-		writeJSON(w, map[string]any{"status_code": code, "latency_ms": lat, "body": body})
+		times := in.Times
+		if times < 1 {
+			times = 1
+		}
+		if times > 50 {
+			http.Error(w, "times capped at 50", 400)
+			return
+		}
+		var bodyOverride []byte
+		if in.BodyB64 != "" {
+			var err error
+			bodyOverride, err = base64.StdEncoding.DecodeString(in.BodyB64)
+			if err != nil {
+				http.Error(w, "body_base64: invalid base64", 400)
+				return
+			}
+		}
+		results := make([]map[string]any, 0, times)
+		for i := 0; i < times; i++ {
+			if i > 0 && in.DelayMs > 0 {
+				select {
+				case <-r.Context().Done():
+					writeJSON(w, map[string]any{"results": results, "cancelled": true})
+					return
+				case <-time.After(time.Duration(in.DelayMs) * time.Millisecond):
+				}
+			}
+			code, lat, body := replay.SendWithOptions(s.DB, id, in.Target,
+				replay.Options{Headers: in.Headers, Body: bodyOverride, Resign: in.Resign})
+			results = append(results, map[string]any{"status_code": code, "latency_ms": lat, "body": body})
+		}
+		// Backward compat: single replay keeps the flat shape.
+		if times == 1 {
+			writeJSON(w, results[0])
+			return
+		}
+		writeJSON(w, map[string]any{"results": results})
 		return
 	}
 	id := rest
+	if r.Method == "DELETE" {
+		res, err := s.DB.Exec(`DELETE FROM requests WHERE id=?`, id)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			http.Error(w, "not found", 404)
+			return
+		}
+		writeJSON(w, map[string]string{"id": id, "deleted": "true"})
+		return
+	}
+	if r.Method != "GET" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
 	var method, path, headers, ctype, vs, verr, hint, at, query string
 	var body []byte
 	err := s.DB.QueryRow(`SELECT method, path, headers, content_type, verify_status, verify_error, fix_hint, received_at, query, body FROM requests WHERE id=?`, id).

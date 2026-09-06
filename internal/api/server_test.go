@@ -8,10 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/you/omnihook/internal/capture"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/db"
+	"github.com/you/omnihook/internal/verify"
 )
 
 // newTestServer spins up the full stack (SQLite temp file + handlers) in-process.
@@ -120,4 +122,172 @@ func TestCaptureListReplayLoop(t *testing.T) {
 func TestMain(m *testing.M) {
 	_ = os.Setenv("DATA_DIR", os.TempDir())
 	os.Exit(m.Run())
+}
+
+func doAPI(t *testing.T, s *Server, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var rdr *bytes.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	} else {
+		rdr = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, rdr)
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// Endpoint + request lifecycle: upsert on re-create, PATCH secret/target,
+// clear requests, delete request, delete endpoint.
+func TestEndpointLifecycle(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "lc", "provider": "generic"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d", rec.Code)
+	}
+	// Re-create with new values upserts instead of silently ignoring.
+	rec = doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "lc", "provider": "stripe", "secret": "whsec_1", "target_url": "http://localhost:9/x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-create = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "GET", "/api/endpoints/lc", nil)
+	var got map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got["provider"] != "stripe" || got["target_url"] != "http://localhost:9/x" {
+		t.Fatalf("upsert failed: %s", rec.Body.String())
+	}
+	// PATCH a subset.
+	rec = doAPI(t, s, "PATCH", "/api/endpoints/lc", map[string]string{"secret": "whsec_2"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch = %d: %s", rec.Code, rec.Body.String())
+	}
+	// Capture one request, then clear + delete flows.
+	_, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method) VALUES('lc-1','lc','POST'),('lc-2','lc','POST')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = doAPI(t, s, "DELETE", "/api/requests/lc-1", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete request = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "DELETE", "/api/endpoints/lc/requests", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear requests = %d", rec.Code)
+	}
+	var n int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM requests WHERE endpoint_slug='lc'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("remaining = %d", n)
+	}
+	rec = doAPI(t, s, "DELETE", "/api/endpoints/lc", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete endpoint = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "GET", "/api/endpoints/lc", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get deleted = %d", rec.Code)
+	}
+	rec = doAPI(t, s, "PATCH", "/api/endpoints/nope", map[string]string{"secret": "x"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("patch missing = %d", rec.Code)
+	}
+}
+
+func TestSlugValidation(t *testing.T) {
+	s := newTestServer(t)
+	for _, bad := range []string{"a/b", "..", "../x", "-lead", "_lead", "has space", "semi;colon", "toolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongtoolongxx"} {
+		rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": bad})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("slug %q = %d, want 400", bad, rec.Code)
+		}
+	}
+	for _, good := range []string{"a", "proj-1_2", "X9"} {
+		rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": good})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("slug %q = %d, want 200", good, rec.Code)
+		}
+	}
+	if !ValidSlug("ok-1") || ValidSlug("") || ValidSlug("a/b") {
+		t.Fatal("ValidSlug wrong")
+	}
+}
+
+// Replay upgrades: times=N returns a results array; resign refreshes a stale
+// Stripe signature so the target sees a verifiable PASS.
+func TestReplayTimesAndResign(t *testing.T) {
+	s := newTestServer(t)
+	createBody, _ := json.Marshal(map[string]string{
+		"slug": "rs1", "provider": "stripe", "secret": "whsec_api_resign",
+	})
+	req := httptest.NewRequest("POST", "/api/endpoints", bytes.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create endpoint = %d", rec.Code)
+	}
+	stale := `{"id":"evt_stale"}`
+	hj, _ := json.Marshal(map[string][]string{"Stripe-Signature": {"t=100,v1=deadbeef"}})
+	if _, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, headers, content_type, body, body_size)
+		VALUES('stale-1','rs1','POST','/',?,?,?,?)`, string(hj), "application/json", []byte(stale), len(stale)); err != nil {
+		t.Fatal(err)
+	}
+	var hits int
+	var lastSig string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		lastSig = r.Header.Get("Stripe-Signature")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	replayBody, _ := json.Marshal(map[string]any{"target": target.URL, "times": 2, "resign": true})
+	req = httptest.NewRequest("POST", "/api/requests/stale-1/replay", bytes.NewReader(replayBody))
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	results, ok := out["results"].([]any)
+	if !ok || len(results) != 2 {
+		t.Fatalf("results = %s", rec.Body.String())
+	}
+	if hits != 2 {
+		t.Fatalf("hits = %d", hits)
+	}
+	got := verify.Chain("whsec_api_resign", "stripe",
+		map[string]string{"Stripe-Signature": lastSig}, []byte(stale), time.Now())
+	if got.Status != verify.PASS {
+		t.Fatalf("resigned did not verify: %+v", got)
+	}
+}
+
+// Regression: a dead forward target must never fail the provider response.
+// Capture returns the configured 200 even when forwarding is impossible.
+func TestCaptureWithBrokenForwardStill200(t *testing.T) {
+	s := newTestServer(t)
+	createBody, _ := json.Marshal(map[string]string{
+		"slug": "fwd1", "provider": "generic", "target_url": "http://127.0.0.1:1/hook",
+	})
+	req := httptest.NewRequest("POST", "/api/endpoints", bytes.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create endpoint status = %d", rec.Code)
+	}
+	req = httptest.NewRequest("POST", "/hook/fwd1", bytes.NewBufferString(`{"x":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capture with broken forward = %d, want 200", rec.Code)
+	}
+	req = httptest.NewRequest("GET", "/api/endpoints/fwd1/requests", nil)
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	var list []map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+		t.Fatalf("list = %q, err = %v", rec.Body.String(), err)
+	}
 }
