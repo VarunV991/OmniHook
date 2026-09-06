@@ -1,63 +1,86 @@
 # OmniHook — local-first universal webhook inbox (MIT)
 
-Capture, verify, replay webhooks locally. No account. Data stays in SQLite.
+Capture, verify, replay webhooks locally. No account. Data stays in your SQLite file.
 
-See **PLAN.md** for full requirements, scope, build/test/launch plan.
+> Status: `v0.1.0` — runnable single binary. See [PLAN.md](PLAN.md) for scope and [CHANGELOG.md](CHANGELOG.md) for releases.
+
+## Why
+
+Debugging webhooks today means tunnels with changing URLs, single-provider CLIs with synthetic events, silent HMAC failures from parsed-instead-of-raw bodies, and hosted inspectors that keep your payment payloads. OmniHook gives you a permanent local capture URL, tells you **why** a signature failed (with the framework fix), and replays the exact bytes to localhost as many times as you need — offline after capture.
+
+**Non-goals:** not a production gateway (no retries/DLQ/FIFO/portal). For sending webhooks to your users, use Svix/Hookdeck Outpost. For local debugging, use OmniHook.
 
 ## Quickstart (60s)
 
 ```bash
 go run ./cmd/omnihook up
-# UI: http://localhost:8080/  Health: http://localhost:8080/health
+# UI: http://localhost:8080/   Health: http://localhost:8080/health
 
-# create endpoint
+# 1. create endpoint
 curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json' \
   -d '{"slug":"proj1","provider":"stripe"}'
 
-# send a webhook
-curl -X POST localhost:8080/hook/proj1 -H 'Content-Type: application/json' \
+# 2. point provider (or tunnel) at http://<host>:8080/hook/proj1, then:
+curl -X POST localhost:8080/hook/proj1/order/123 -H 'Content-Type: application/json' \
   -d '{"event":"ping"}'
 
-# list + replay via UI or API
-curl -s localhost:8080/api/endpoints/proj1/requests | head -c 500
+# 3. list + replay to your app
+curl -s localhost:8080/api/endpoints/proj1/requests
+curl -s -X POST localhost:8080/api/requests/<id>/replay -H 'Content-Type: application/json' \
+  -d '{"target":"http://localhost:3000/webhooks/stripe"}'
 ```
 
 Docker:
 
 ```bash
-docker compose up --build
+docker compose up --build   # UI on :8080, data in ./data
 ```
 
-## What v1 does / doesn't do
-
-Does: capture any method/path/body (raw bytes), verify Stripe/GitHub/Standard/Razorpay/Generic HMAC with fix hints, live SSE inbox, one-click replay to localhost with edit, single binary + SQLite.
-
-Doesn't: prod retries/DLQ, transformations, customer portal, hosted relay. Those are non-goals (see PLAN.md §1.4).
-
-## Raw-body fix hints (why verify fails)
-
-- Express: `app.post('/hook', express.raw({type:'application/json'}))`
-- Spring Boot: `@RequestBody byte[] raw` + `Mac.getInstance("HmacSHA256")`
-- FastAPI: `raw = await request.body()`
-- Django: `request.body` (never `request.POST` for HMAC)
-
-## Tunnel (bring your own for v1)
+Public URL for real providers (bring your own tunnel, v1 has no hosted relay):
 
 ```bash
 cloudflared tunnel --url http://localhost:8080
-# set PUBLIC_URL=https://<you>.trycloudflare.com so capture URLs render correctly
+PUBLIC_URL=https://<you>.trycloudflare.com go run ./cmd/omnihook up
 ```
+
+## Signature verification (the useful part)
+
+Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Generic HMAC**. Auto-detected from headers or pinned per endpoint. Every `FAIL` ships a fix hint:
+
+- Express: `app.post('/hook', express.raw({type:'application/json'}))` — never `express.json()` before HMAC.
+- Spring Boot: `@RequestBody byte[] raw` + `Mac.getInstance("HmacSHA256")`.
+- FastAPI: `raw = await request.body()`.
+- Django: `request.body` (never `request.POST`).
+
+## Configuration
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `PORT` | `8080` | HTTP port (UI + API + capture) |
+| `DATA_DIR` | `./data` | SQLite lives here (`omnihook.db`) |
+| `RETENTION_HOURS` | `168` | GC window for old requests |
+| `MAX_BODY_BYTES` | `1048576` | Bodies above this are truncated (flagged) |
+| `ACCESS_TOKEN` | unset | Gates UI + `/api/*`; `/hook/*` stays public by design |
+| `PUBLIC_URL` | unset | Base URL rendered in capture URLs behind a tunnel |
 
 ## Layout
 
 ```
-cmd/omnihook      binary entry (up|version)
-internal/config   env config
-internal/db       SQLite open + migrate (WAL)
-internal/verify   stripe|github|standard|razorpay|generic + chain (90%+ tests)
-internal/capture  raw-body capture handler + SSE hub
-internal/replay   replay client with SSRF guard
-internal/api      REST + SSE + embedded UI server
-web/              single-page inbox UI (embedded)
-migrations/       idempotent SQL
+cmd/omnihook        binary entry (up|version)
+internal/config     env config
+internal/db         SQLite open + migrate (WAL)
+internal/verify     stripe|github|standard|razorpay|generic + chain
+internal/capture    raw-body capture handler + SSE hub
+internal/replay     replay client with SSRF guard
+internal/api        REST + SSE + UI server (+ hermetic tests)
+web/                single-page inbox UI
+migrations/         idempotent SQL (source of truth; mirrored inline in db.go)
 ```
+
+## Development
+
+```bash
+go vet ./... && go test ./... && go build ./...
+```
+
+Branching: `main` = releases, `develop` = integration, `feat/*` for work. See [CONTRIBUTING.md](CONTRIBUTING.md).
