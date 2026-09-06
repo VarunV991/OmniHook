@@ -28,9 +28,13 @@ go run ./cmd/omnihook up                  # foreground only (see §4)
 - Toolchain: Go 1.22, module `github.com/you/omnihook` (rename when repo namespace is final).
 - DB driver: `modernc.org/sqlite` (pure Go, no CGO). First `go mod tidy`/build downloads
   heavily — allow 300s timeouts.
-- Never use `Select-Object -First` to truncate tool output; full output is captured to a file.
 
 ## 4. Sandbox gotchas (learned the hard way)
+
+These apply on every OS unless marked. When in doubt, prefer hermetic
+`httptest` coverage (§4c.1) over shell-driven servers.
+
+### 4a. Windows (PowerShell 5.1)
 
 1. **Background processes do not survive a tool call.** The harness kills lingering child
    processes (`ChildProcess.kill`). `Start-Job` and detached `Start-Process` servers die
@@ -40,13 +44,33 @@ go run ./cmd/omnihook up                  # foreground only (see §4)
    `StartInfo.EnvironmentVariables` **before** `Start()`), poll `/health`, exercise the
    API, then `Kill()` in a `finally` block. `Start-Process` cmdlet is broken here —
    do not use it.
-3. **Env must precede process start.** `$env:PORT=...` set after `Start-Process` does
+3. **Env must precede process start.** `$env:PORT=...` set after launch does
    nothing to the child. Always use a fresh port per run (e.g. `18081`) and a temp
    data dir (`Join-Path $env:TEMP "omnihook-smoke"`).
-4. **Prefer hermetic tests.** `internal/api/server_test.go` runs the full
+4. **Build with `.exe` suffix** (`go build -o bin\omnihook.exe ...`): the shell
+   cannot execute or pipe extensionless binaries (`CantActivateDocumentInPipeline`).
+5. **No `grep`/`&&`:** this shell has neither; use the `grep` tool and
+   `; if ($?) { ... }` chaining. Quote with single quotes; avoid `\"` escapes —
+   prefer string concatenation over interpolation when nesting quotes.
+
+### 4b. Linux / macOS (bash)
+
+1. Same single-call rule: start the server, poll `/health`, exercise, `kill` —
+   all in one tool call. Prefer `./bin/omnihook & SRV=$!; ...; kill $SRV`, but
+   be aware the harness may reap children when the call ends, so keep the whole
+   loop inside the call and `kill` explicitly (trap on EXIT helps).
+2. Env via `export PORT=... DATA_DIR=$(mktemp -d)` before launch; fresh port per run.
+3. Binary has no extension (`go build -o bin/omnihook ...`); `grep`, `&&`, and
+   double-quote interpolation all work normally.
+
+### 4c. All shells
+
+1. **Prefer hermetic tests.** `internal/api/server_test.go` runs the full
    create→capture→list→detail→replay loop in-process via `httptest` — no ports, no
    processes. Add regression coverage there, not in shell scripts.
-5. File writes: use `read` before `edit`/`write`; keep `oldString` boundaries minimal.
+2. File writes: use `read` before `edit`/`write`; keep `oldString` boundaries minimal.
+3. Never use output truncation to limit tool results; full output is captured to
+   a file — search it instead (`Select-Object -First` on Windows, `head` on bash).
 
 ## 5. Code conventions
 

@@ -107,21 +107,27 @@ Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), 
 ## Layout
 
 ```
-cmd/omnihook        binary entry (up|version + DB-backed subcommands)
-internal/api        REST + SSE + UI server (+ hermetic tests)
-internal/capture    raw-body capture handler + SSE fan-out hub + rate gate
-internal/cli        new/list/show/replay/verify/gc subcommands
-internal/config     env config
-internal/db         SQLite open + migrate (WAL)
-internal/forward    async forward worker (records to replays, SSRF-guarded)
-internal/gc         retention cleanup (CLI one-shot + hourly scheduler)
-internal/ratelimit  per-IP token bucket for capture responses
-internal/replay     replay client (options, re-sign, SSRF guard)
-internal/verify     stripe|github|standard|razorpay|shopify|generic + chain + re-sign
-web/                single-page inbox UI
-migrations/         idempotent SQL (source of truth; mirrored inline in db.go)
-scripts/checkdocs   docs-freshness gates (CHANGELOG, README env table, schema sync)
-docs/               PROVIDERS.md (connect guides + test results), MANUAL-TEST.md
+omnihook/
+├── cmd/omnihook/          binary entry (up|version + DB-backed subcommands)
+├── internal/
+│   ├── api/               REST + SSE + UI server (+ hermetic tests)
+│   ├── capture/           raw-body capture handler + SSE fan-out hub + rate gate
+│   ├── cli/               new/list/show/replay/verify/gc subcommands
+│   ├── config/            env config
+│   ├── db/                SQLite open + migrate (WAL)
+│   ├── forward/           async forward worker (records to replays, SSRF-guarded)
+│   ├── gc/                retention cleanup (CLI one-shot + hourly scheduler)
+│   ├── ratelimit/         per-IP token bucket for capture responses
+│   ├── replay/            replay client (options, re-sign, SSRF guard)
+│   └── verify/            stripe|github|standard|razorpay|shopify|generic + chain + re-sign
+├── web/                   single-page inbox UI (index.html)
+├── migrations/            idempotent SQL (source of truth; mirrored inline in db.go)
+├── scripts/checkdocs/     docs-freshness gates (CHANGELOG, README env table, schema sync)
+├── docs/                  PROVIDERS.md (connect guides + test results)
+│                          MANUAL-TEST.md (hands-on playbook, per-OS)
+├── .github/workflows/     CI (make verify)
+├── Dockerfile / compose / .goreleaser.yml / Makefile
+└── README / AGENTS / CONTRIBUTING / CHANGELOG / LICENSE
 ```
 
 ## Development
