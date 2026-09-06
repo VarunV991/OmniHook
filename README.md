@@ -89,6 +89,7 @@ Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), 
 | `PORT` | `8080` | HTTP port (UI + API + capture) |
 | `DATA_DIR` | `./data` | SQLite lives here (`omnihook.db`) unless `DATABASE_URL` is set |
 | `DATABASE_URL` | unset | Full SQLite path; overrides `DATA_DIR/omnihook.db` when set |
+| `RATE_LIMIT_RPS` | `50` | Capture responses per second per IP (`0` disables); over-limit requests are stored but answered `429 + Retry-After: 1` |
 | `RETENTION_HOURS` | `168` | GC window for old requests |
 | `MAX_BODY_BYTES` | `1048576` | Bodies above this are truncated (flagged) |
 | `ACCESS_TOKEN` | unset | Gates UI + `/api/*`; `/hook/*` stays public by design |
@@ -101,8 +102,10 @@ cmd/omnihook        binary entry (up|version)
 internal/config     env config
 internal/db         SQLite open + migrate (WAL)
 internal/verify     stripe|github|standard|razorpay|generic + chain
-internal/capture    raw-body capture handler + SSE hub
+internal/capture    raw-body capture handler + SSE hub + rate gate
 internal/forward    async forward worker (records to replays, SSRF-guarded)
+internal/gc         retention cleanup (CLI one-shot + hourly scheduler)
+internal/ratelimit  per-IP token bucket for capture responses
 internal/replay     replay client with SSRF guard
 internal/api        REST + SSE + UI server (+ hermetic tests)
 web/                single-page inbox UI

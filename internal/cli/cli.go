@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/you/omnihook/internal/config"
+	"github.com/you/omnihook/internal/gc"
 	"github.com/you/omnihook/internal/replay"
 	"github.com/you/omnihook/internal/verify"
 )
@@ -357,21 +358,12 @@ func cmdGC(db *sql.DB, cfg config.Config, args []string, stdout, stderr io.Write
 	if !needDB(db, stderr) {
 		return ExitError
 	}
-	r1, err := db.Exec(`DELETE FROM requests WHERE received_at < datetime('now', ?)`,
-		fmt.Sprintf("-%d hours", *retention))
+	reqs, eps, err := gc.Run(db, *retention)
 	if err != nil {
-		fmt.Fprintf(stderr, "gc requests: %v\n", err)
+		fmt.Fprintf(stderr, "gc: %v\n", err)
 		return ExitError
 	}
-	n1, _ := r1.RowsAffected()
-	r2, err := db.Exec(`DELETE FROM endpoints WHERE expires_at IS NOT NULL AND expires_at < datetime('now')
-		AND NOT EXISTS (SELECT 1 FROM requests WHERE endpoint_slug=slug)`)
-	if err != nil {
-		fmt.Fprintf(stderr, "gc endpoints: %v\n", err)
-		return ExitError
-	}
-	n2, _ := r2.RowsAffected()
-	fmt.Fprintf(stdout, "gc: deleted %d requests, %d expired endpoints (retention %dh)\n", n1, n2, *retention)
+	fmt.Fprintf(stdout, "gc: deleted %d requests, %d expired endpoints (retention %dh)\n", reqs, eps, *retention)
 	return ExitOK
 }
 
