@@ -66,7 +66,10 @@ Set `target_url` on an endpoint and every capture is forwarded async (10s timeou
 with original method, headers, and raw bytes, plus `X-Omnihook-Forward: true` and
 `X-Omnihook-Request-Id`. The provider always gets your configured mock response —
 forwarding can never break capture. Each attempt is recorded (status + latency);
-inspect via the UI replay panel or the `replays` table.
+inspect via the UI replay panel or the `replays` table. Delivery runs on a
+bounded pool (8 workers, 128 queue); drops and self-target loops are recorded,
+not silent. Marked requests (already forwarded/replayed by OmniHook) are
+captured but never re-forwarded.
 
 ```bash
 curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json' \

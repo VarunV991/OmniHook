@@ -6,6 +6,10 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- A3 bounded delivery + shutdown: forward worker pool (8 workers, 128 queue;
+  drops recorded, never silent); self-target refusal + marked-request loop
+  breaker; http.Server timeouts with SIGINT/SIGTERM graceful shutdown
+  (drains forwards, stops GC, closes DB last).
 - A2 exposure lockdown: loopback bind by default (`BIND`, `--bind`), stderr
   warning for untokened external binds; public `/login` shell + `/api/login`
   HttpOnly cookie sessions + `/api/logout`; root serves login instead of 401.
