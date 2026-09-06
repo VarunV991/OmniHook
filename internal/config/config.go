@@ -2,12 +2,14 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 )
 
 // Config holds all runtime settings (env-driven, single volume + single port).
 type Config struct {
+	Bind         string
 	Port         string
 	DataDir      string
 	DBPath       string
@@ -48,6 +50,9 @@ func getenvInt64(key string, def int64) int64 {
 func Load(version string) Config {
 	dataDir := getenv("DATA_DIR", "./data")
 	return Config{
+		// Loopback by default: management + replay must not face the network
+		// unless explicitly requested (review #02).
+		Bind:         getenv("BIND", "127.0.0.1"),
 		Port:         getenv("PORT", "8080"),
 		DataDir:      dataDir,
 		DBPath:       getenv("DATABASE_URL", dataDir+"/omnihook.db"),
@@ -60,10 +65,21 @@ func Load(version string) Config {
 	}
 }
 
+// Loopback reports whether Bind is a loopback address.
+func (c Config) Loopback() bool {
+	return net.ParseIP(c.Bind).IsLoopback()
+}
+
 // Validate rejects nonsensical configuration at startup instead of failing
 // obscurely at runtime (negative body caps panic on slicing; zero silently
 // truncates every body; negative retention builds invalid SQL).
 func (c Config) Validate() error {
+	if c.Bind == "" {
+		return fmt.Errorf("BIND must not be empty (use 127.0.0.1, or 0.0.0.0 to expose deliberately)")
+	}
+	if ip := net.ParseIP(c.Bind); ip == nil {
+		return fmt.Errorf("BIND must be an IP address, got %q", c.Bind)
+	}
 	if c.Port == "" {
 		return fmt.Errorf("PORT must not be empty")
 	}

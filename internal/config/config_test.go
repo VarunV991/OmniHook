@@ -6,17 +6,21 @@ import (
 )
 
 func TestValidate(t *testing.T) {
-	base := Config{Port: "8080", DataDir: "./data", DBPath: "./data/x.db",
+	base := Config{Bind: "127.0.0.1", Port: "8080", DataDir: "./data", DBPath: "./data/x.db",
 		RetentionHrs: 168, MaxBodyBytes: 1 << 20, RateLimitRPS: 50, Version: "test"}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("valid cfg: %v", err)
+	}
+	if !base.Loopback() {
+		t.Fatal("127.0.0.1 must be loopback")
 	}
 	cases := []struct {
 		name string
 		mut  func(*Config)
 		want string
 	}{
-		{"port empty", func(c *Config) { c.Port = "" }, "PORT"},
+		{"bind empty", func(c *Config) { c.Bind = "" }, "BIND"},
+		{"bind hostname", func(c *Config) { c.Bind = "localhost" }, "BIND"},
 		{"port bad", func(c *Config) { c.Port = "abc" }, "PORT"},
 		{"port zero", func(c *Config) { c.Port = "0" }, "PORT"},
 		{"no dirs", func(c *Config) { c.DataDir, c.DBPath = "", "" }, "DATA_DIR"},

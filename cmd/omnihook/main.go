@@ -39,14 +39,19 @@ func run(args []string) int {
 	case "up", "serve":
 		fs := flag.NewFlagSet("up", flag.ContinueOnError)
 		port := fs.String("port", cfg.Port, "HTTP port")
+		bind := fs.String("bind", cfg.Bind, "bind address (127.0.0.1 default; 0.0.0.0 exposes)")
 		if err := fs.Parse(args[1:]); err != nil {
 			return cli.ExitError
 		}
 		if fs.NArg() > 0 {
-			fmt.Fprintln(os.Stderr, "usage: omnihook up [--port P]")
+			fmt.Fprintln(os.Stderr, "usage: omnihook up [--port P] [--bind ADDR]")
 			return cli.ExitError
 		}
-		cfg.Port = *port
+		cfg.Port, cfg.Bind = *port, *bind
+		if err := cfg.Validate(); err != nil {
+			fmt.Fprintln(os.Stderr, "invalid config:", err)
+			return cli.ExitError
+		}
 		return runServe(cfg)
 	case "version", "--version", "-v":
 		fmt.Println(cfg.Version)
@@ -90,9 +95,16 @@ func runServe(cfg config.Config) int {
 	cap := capture.NewHandler(sqldb, cfg, hub)
 	go scheduleGC(sqldb, cfg.RetentionHrs)
 	srv := api.New(sqldb, cfg, cap)
-	addr := ":" + cfg.Port
-	fmt.Printf("OmniHook %s listening on http://localhost%s\nUI: http://localhost%s/\nHealth: http://localhost%s/health\nData: %s\n",
+	addr := cfg.Bind + ":" + cfg.Port
+	fmt.Printf("OmniHook %s listening on http://%s\nUI: http://%s/\nHealth: http://%s/health\nData: %s\n",
 		cfg.Version, addr, addr, addr, cfg.DBPath)
+	if !cfg.Loopback() {
+		if cfg.AccessToken == "" {
+			fmt.Fprintln(os.Stderr, "WARNING: listening on non-loopback "+cfg.Bind+" WITHOUT ACCESS_TOKEN: UI, API and replay are exposed to the network. Set ACCESS_TOKEN.")
+		} else {
+			fmt.Fprintln(os.Stderr, "NOTE: listening on non-loopback "+cfg.Bind+"; management is gated by ACCESS_TOKEN, /hook/* stays public by design.")
+		}
+	}
 	if err := http.ListenAndServe(addr, srv.Mux); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return cli.ExitError

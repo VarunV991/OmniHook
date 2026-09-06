@@ -38,26 +38,54 @@ func indexHTML() []byte {
 	return []byte(`<html><body><h3>OmniHook up. UI file web/index.html not found.</h3></body></html>`)
 }
 
+// loginHTML serves web/login.html from disk when present, else a minimal
+// inline form with the same behavior (POST token to /api/login).
+func loginHTML() []byte {
+	for _, p := range []string{"web/login.html", "./web/login.html", "../web/login.html"} {
+		if b, err := os.ReadFile(p); err == nil {
+			return b
+		}
+	}
+	return []byte(`<html><body><form method="post" action="/api/login">Token: <input type="password" name="token"/><button>Sign in</button></form></body></html>`)
+}
+
 func New(db *sql.DB, cfg config.Config, cap *capture.Handler) *Server {
 	s := &Server{DB: db, Cfg: cfg, Cap: cap, Mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
 
+// authed reports whether r carries the configured access token.
+func (s *Server) authed(r *http.Request) bool {
+	if s.Cfg.AccessToken == "" {
+		return true
+	}
+	if r.Header.Get("Authorization") == "Bearer "+s.Cfg.AccessToken {
+		return true
+	}
+	if c, err := r.Cookie(cookieName); err == nil && c.Value == s.Cfg.AccessToken {
+		return true
+	}
+	return false
+}
+
+// cookieName is the session cookie set by /api/login. SameSite=Lax blocks
+// cross-site POSTs; the UI is same-origin so fetch works. Secure is unset
+// because local development is plain HTTP — do not expose the UI to the
+// public internet and expect cookie confidentiality.
+const cookieName = "omnihook_token"
+
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	if s.Cfg.AccessToken == "" {
 		return next
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/hook/") || r.URL.Path == "/health" {
+		if strings.HasPrefix(r.URL.Path, "/hook/") || r.URL.Path == "/health" ||
+			r.URL.Path == "/login" || r.URL.Path == "/api/login" {
 			next(w, r)
 			return
 		}
-		if r.Header.Get("Authorization") == "Bearer "+s.Cfg.AccessToken {
-			next(w, r)
-			return
-		}
-		if c, err := r.Cookie("omnihook_token"); err == nil && c.Value == s.Cfg.AccessToken {
+		if s.authed(r) {
 			next(w, r)
 			return
 		}
@@ -103,20 +131,82 @@ func (s *Server) routes() {
 	// Capture (public by design).
 	m.HandleFunc("/hook/", s.Cap.ServeHook)
 
-	// UI.
-	m.HandleFunc("/", s.auth(func(w http.ResponseWriter, r *http.Request) {
+	// UI: serve the login shell (not a 401) when gated and unauthenticated,
+	// so a fresh browser can actually sign in (review #04). This route is
+	// intentionally outside s.auth: it decides shell-vs-app itself.
+	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
+		if s.Cfg.AccessToken != "" && !s.authed(r) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write(loginHTML())
+			return
+		}
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(indexHTML())
-	}))
+	})
+	m.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		if s.Cfg.AccessToken == "" || s.authed(r) {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(loginHTML())
+	})
+	m.HandleFunc("/api/login", s.handleLogin)
+	m.HandleFunc("/api/logout", s.handleLogout)
 
 	// Endpoints CRUD.
 	m.HandleFunc("/api/endpoints", s.auth(s.handleEndpoints))
 	m.HandleFunc("/api/endpoints/", s.auth(s.handleEndpointSub))
 	m.HandleFunc("/api/requests/", s.auth(s.handleRequestSub))
+}
+
+// handleLogin exchanges the access token for a session cookie (review #04).
+// The cookie is HttpOnly + SameSite=Lax with a 12h lifetime. Secure is unset:
+// local development is plain HTTP, so this cookie must never cross the public
+// internet — tunnel + ACCESS_TOKEN setups rely on the tunnel's TLS, and the
+// management surface should not be exposed beyond trusted machines.
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.Cfg.AccessToken == "" {
+		http.Error(w, "login not required (ACCESS_TOKEN unset)", 400)
+		return
+	}
+	var in struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &in); err != nil || in.Token == "" {
+		http.Error(w, "invalid login request", 400)
+		return
+	}
+	if in.Token != s.Cfg.AccessToken {
+		http.Error(w, "invalid token", 401)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    s.Cfg.AccessToken,
+		Path:     "/",
+		MaxAge:   12 * 3600,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	writeJSON(w, map[string]string{"ok": "true"})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	writeJSON(w, map[string]string{"ok": "true"})
 }
 
 func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request) {

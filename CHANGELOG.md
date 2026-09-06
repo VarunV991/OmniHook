@@ -6,6 +6,9 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- A2 exposure lockdown: loopback bind by default (`BIND`, `--bind`), stderr
+  warning for untokened external binds; public `/login` shell + `/api/login`
+  HttpOnly cookie sessions + `/api/logout`; root serves login instead of 401.
 - A1 trust fixes: capture returns 503 (never phantom success) on storage
   failure; 413 reject for oversized bodies (no truncated verify/forward);
   400 on unreadable bodies and invalid slugs; bounded management JSON
