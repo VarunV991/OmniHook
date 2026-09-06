@@ -59,9 +59,6 @@ type Options struct {
 // SendWithOptions replays with Options. Explicit Headers win over resigned
 // headers; resigned headers win over stored originals.
 func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, int64, string) {
-	if blocked(target) {
-		return 0, 0, "blocked: SSRF guard (metadata host)"
-	}
 	var method, contentType, headersJSON, provider, secret string
 	var body []byte
 	err := db.QueryRow(`SELECT r.method, r.content_type, r.headers, r.body,
@@ -70,6 +67,12 @@ func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, i
 		requestID).Scan(&method, &contentType, &headersJSON, &body, &provider, &secret)
 	if err != nil {
 		return 0, 0, "request not found: " + requestID
+	}
+	if blocked(target) {
+		msg := "blocked: SSRF guard (metadata host)"
+		_, _ = db.Exec(`INSERT INTO replays(id, request_id, target_url, status_code, latency_ms, error) VALUES(?,?,?,?,?,?)`,
+			uuid.NewString(), requestID, target, 0, 0, msg)
+		return 0, 0, msg
 	}
 	if opts.Body != nil {
 		body = opts.Body
@@ -100,9 +103,11 @@ func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, i
 		req.Header.Set("Content-Type", contentType)
 	}
 	// Restore original headers so the replay is byte-faithful, then apply
-	// resigned/explicit overrides on top.
+	// resigned/explicit overrides on top. Content-Type was set explicitly
+	// above (from the stored column) to avoid duplicate header values.
 	for k, vv := range stored {
-		if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") {
+		if strings.EqualFold(k, "host") || strings.EqualFold(k, "content-length") ||
+			strings.EqualFold(k, "content-type") {
 			continue
 		}
 		for _, v := range vv {

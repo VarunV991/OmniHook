@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,26 +46,38 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// Hub broadcasts new request IDs over SSE.
+// Hub broadcasts new request IDs over SSE. Each subscriber gets its own
+// channel so multiple tabs/clients all receive every event (a single shared
+// channel would deal messages out to competing readers instead).
 type Hub struct {
-	ch chan string
+	mu   sync.Mutex
+	subs map[chan string]struct{}
 }
 
-func NewHub() *Hub { return &Hub{ch: make(chan string, 256)} }
+func NewHub() *Hub { return &Hub{subs: map[chan string]struct{}{}} }
+
 func (h *Hub) Broadcast(id string) {
-	select {
-	case h.ch <- id:
-	default:
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.subs {
+		select {
+		case ch <- id:
+		default: // slow reader: drop, live list refreshes anyway
+		}
 	}
 }
-func (h *Hub) Chan() <-chan string { return h.ch }
 
-func headersMap(r *http.Request) map[string]string {
-	m := map[string]string{}
-	for k, vv := range r.Header {
-		m[strings.ToLower(k)] = strings.Join(vv, ", ")
+// Subscribe returns a channel receiving every broadcast until unsub is called.
+func (h *Hub) Subscribe() (chan string, func()) {
+	ch := make(chan string, 16)
+	h.mu.Lock()
+	h.subs[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.subs, ch)
+		h.mu.Unlock()
 	}
-	return m
 }
 
 // ServeHook handles /hook/...
@@ -77,13 +90,6 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing slug", http.StatusBadRequest)
 		return
 	}
-	var ep struct {
-		Exists              bool
-		Provider, SecretRef string
-		Target              string
-		RespStatus          int
-		RespBody, RespCtype string
-	}
 	row := h.DB.QueryRow(`SELECT provider, secret_ref, target_url, response_status, response_body, response_content_type FROM endpoints WHERE slug=?`, slug)
 	var provider, secret, target, respBody, respCtype string
 	var status int
@@ -91,11 +97,7 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 		// Auto-create on first hit (frictionless dev UX, per PLAN F1).
 		_, _ = h.DB.Exec(`INSERT OR IGNORE INTO endpoints(slug) VALUES(?)`, slug)
 		provider, secret, target, status, respBody, respCtype = "generic", "", "", 200, `{"ok":true}`, "application/json"
-		ep.Exists = false
-	} else {
-		ep.Exists = true
 	}
-	_ = ep
 
 	limited := io.LimitReader(r.Body, h.Cfg.MaxBodyBytes+1)
 	raw, _ := io.ReadAll(limited)
@@ -104,15 +106,11 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 		raw = raw[:h.Cfg.MaxBodyBytes]
 		truncated = 1
 	}
-	hdrs := headersMap(r)
 	hdrsJSON, _ := json.Marshal(r.Header)
 	res := verify.Chain(secret, provider, lowerHeaders(r), raw, time.Now())
 
 	id := uuid.NewString()
 	subPath := "/" + strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/hook/"+slug), "/")
-	if subPath == "/" || strings.HasPrefix(subPath, "//") {
-		// normalize
-	}
 	_, _ = h.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, query, headers, content_type, body, body_size, truncated, verify_status, verify_error, fix_hint)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, slug, r.Method, subPath, r.URL.RawQuery, string(hdrsJSON),
@@ -139,7 +137,6 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", respCtype)
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(respBody))
-	_ = hdrs
 }
 
 func lowerHeaders(r *http.Request) map[string]string {
