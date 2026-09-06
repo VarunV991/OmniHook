@@ -8,3 +8,4 @@ dist/
 # Local-only build plan (unpublished, kept on disk)
 PLAN.md
 docs/LAUNCH.md
+OMNIHOOK_REVIEW.md

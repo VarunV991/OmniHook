@@ -5,6 +5,14 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 
 ## [Unreleased] (develop)
 
+Added:
+- A1 trust fixes: capture returns 503 (never phantom success) on storage
+  failure; 413 reject for oversized bodies (no truncated verify/forward);
+  400 on unreadable bodies and invalid slugs; bounded management JSON
+  (malformed/trailing rejected); PATCH status 200–599; startup config
+  validation; health 503 when DB down; generic 500s (no DB detail leaks);
+  shared `internal/slug` package.
+
 ## [v0.2.0] - 2026-09-06
 
 Added:

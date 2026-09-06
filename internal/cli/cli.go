@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/you/omnihook/internal/api"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/gc"
 	"github.com/you/omnihook/internal/replay"
+	slugcheck "github.com/you/omnihook/internal/slug"
 	"github.com/you/omnihook/internal/verify"
 )
 
@@ -138,7 +138,7 @@ func cmdNew(db *sql.DB, cfg config.Config, args []string, stdout, stderr io.Writ
 		return ExitError
 	}
 	slug := pos[0]
-	if !api.ValidSlug(slug) {
+	if !slugcheck.Valid(slug) {
 		fmt.Fprintln(stderr, "slug must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 		return ExitError
 	}

@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/you/omnihook/internal/capture"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/replay"
+	"github.com/you/omnihook/internal/slug"
 )
 
 // Server wires capture + management API + embedded UI.
@@ -67,33 +70,35 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// ValidSlug constrains endpoint slugs to URL/router-safe characters so a
-// slug can never escape its /hook/:slug or /api/endpoints/:slug scope.
-// Shared with the CLI so both enforce identical rules.
-func ValidSlug(s string) bool {
-	if len(s) == 0 || len(s) > 64 {
-		return false
+// maxMgmtBody caps management JSON input (endpoints, replay options).
+const maxMgmtBody = 64 * 1024
+
+// decodeJSON bounds input size and rejects malformed or trailing JSON so a
+// truncated `{` can never create state or trigger a partial action.
+func decodeJSON(r *http.Request, v any) error {
+	if r.Body == nil {
+		return fmt.Errorf("empty body")
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		ok := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_'
-		if !ok {
-			return false
-		}
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxMgmtBody+1))
+	if err := dec.Decode(v); err != nil {
+		return err
 	}
-	// First char must be alphanumeric (no leading -/_).
-	c := s[0]
-	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+	if dec.More() {
+		return fmt.Errorf("trailing data after JSON value")
+	}
+	return nil
 }
 
 func (s *Server) routes() {
 	m := s.Mux
 	m.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		dbOK := "up"
 		if err := s.DB.Ping(); err != nil {
-			dbOK = "down:" + err.Error()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"ok": "false", "db": "down", "version": s.Cfg.Version})
+			return
 		}
-		writeJSON(w, map[string]string{"ok": "true", "db": dbOK, "version": s.Cfg.Version})
+		writeJSON(w, map[string]string{"ok": "true", "db": "up", "version": s.Cfg.Version})
 	})
 	// Capture (public by design).
 	m.HandleFunc("/hook/", s.Cap.ServeHook)
@@ -117,19 +122,24 @@ func (s *Server) routes() {
 func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		rows, _ := s.DB.Query(`SELECT slug, name, provider, target_url FROM endpoints ORDER BY slug`)
-		defer func() {
-			if rows != nil {
-				rows.Close()
-			}
-		}()
+		rows, err := s.DB.Query(`SELECT slug, name, provider, target_url FROM endpoints ORDER BY slug`)
+		if err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		defer rows.Close()
 		out := []map[string]string{}
-		if rows != nil {
-			for rows.Next() {
-				var slug, name, provider, target string
-				_ = rows.Scan(&slug, &name, &provider, &target)
-				out = append(out, map[string]string{"slug": slug, "name": name, "provider": provider, "target_url": target})
+		for rows.Next() {
+			var slug, name, provider, target string
+			if err := rows.Scan(&slug, &name, &provider, &target); err != nil {
+				http.Error(w, "storage unavailable", 500)
+				return
 			}
+			out = append(out, map[string]string{"slug": slug, "name": name, "provider": provider, "target_url": target})
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
 		}
 		writeJSON(w, out)
 	case "POST":
@@ -139,11 +149,14 @@ func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			Secret   string `json:"secret"`
 			Target   string `json:"target_url"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&in)
+		if err := decodeJSON(r, &in); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), 400)
+			return
+		}
 		if in.Slug == "" {
 			in.Slug = uuid.NewString()[:8]
 		}
-		if !ValidSlug(in.Slug) {
+		if !slug.Valid(in.Slug) {
 			http.Error(w, "slug must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", 400)
 			return
 		}
@@ -154,7 +167,7 @@ func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			ON CONFLICT(slug) DO UPDATE SET provider=excluded.provider, secret_ref=excluded.secret_ref, target_url=excluded.target_url`,
 			in.Slug, in.Slug, in.Provider, in.Secret, in.Target)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, "storage unavailable", 500)
 			return
 		}
 		base := s.Cfg.PublicURL
@@ -193,8 +206,8 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 				RespBody   *string `json:"response_body"`
 				RespCtype  *string `json:"response_content_type"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-				http.Error(w, "bad JSON", 400)
+			if err := decodeJSON(r, &in); err != nil {
+				http.Error(w, "invalid JSON: "+err.Error(), 400)
 				return
 			}
 			// Targeted updates only; secret can be set after auto-create.
@@ -212,6 +225,10 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 				updates["target_url"] = *in.Target
 			}
 			if in.RespStatus != nil {
+				if *in.RespStatus < 200 || *in.RespStatus > 599 {
+					http.Error(w, "response_status must be 200-599", 400)
+					return
+				}
 				updates["response_status"] = *in.RespStatus
 			}
 			if in.RespBody != nil {
@@ -233,7 +250,7 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 			vals = append(vals, slug)
 			res, err := s.DB.Exec(`UPDATE endpoints SET `+strings.Join(setParts, ", ")+` WHERE slug=?`, vals...)
 			if err != nil {
-				http.Error(w, err.Error(), 500)
+				http.Error(w, "storage unavailable", 500)
 				return
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
@@ -245,7 +262,7 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 		case "DELETE":
 			res, err := s.DB.Exec(`DELETE FROM endpoints WHERE slug=?`, slug)
 			if err != nil {
-				http.Error(w, err.Error(), 500)
+				http.Error(w, "storage unavailable", 500)
 				return
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
@@ -259,19 +276,24 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "requests" && r.Method == "GET" {
-		rows, _ := s.DB.Query(`SELECT id, method, path, verify_status, received_at FROM requests WHERE endpoint_slug=? ORDER BY received_at DESC LIMIT 50`, slug)
-		defer func() {
-			if rows != nil {
-				rows.Close()
-			}
-		}()
+		rows, err := s.DB.Query(`SELECT id, method, path, verify_status, received_at FROM requests WHERE endpoint_slug=? ORDER BY received_at DESC LIMIT 50`, slug)
+		if err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		defer rows.Close()
 		out := []map[string]string{}
-		if rows != nil {
-			for rows.Next() {
-				var id, method, path, vs, at string
-				_ = rows.Scan(&id, &method, &path, &vs, &at)
-				out = append(out, map[string]string{"id": id, "method": method, "path": path, "verify_status": vs, "received_at": at})
+		for rows.Next() {
+			var id, method, path, vs, at string
+			if err := rows.Scan(&id, &method, &path, &vs, &at); err != nil {
+				http.Error(w, "storage unavailable", 500)
+				return
 			}
+			out = append(out, map[string]string{"id": id, "method": method, "path": path, "verify_status": vs, "received_at": at})
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
 		}
 		writeJSON(w, out)
 		return
@@ -279,7 +301,7 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 2 && parts[1] == "requests" && r.Method == "DELETE" {
 		res, err := s.DB.Exec(`DELETE FROM requests WHERE endpoint_slug=?`, slug)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, "storage unavailable", 500)
 			return
 		}
 		n, _ := res.RowsAffected()
@@ -322,7 +344,10 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 			DelayMs int               `json:"delay_ms"`
 			Resign  bool              `json:"resign"`
 		}
-		_ = json.NewDecoder(r.Body).Decode(&in)
+		if err := decodeJSON(r, &in); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), 400)
+			return
+		}
 		if in.Target == "" {
 			http.Error(w, "target required", 400)
 			return
@@ -333,6 +358,10 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 		}
 		if times > 50 {
 			http.Error(w, "times capped at 50", 400)
+			return
+		}
+		if in.DelayMs < 0 || in.DelayMs > 60000 {
+			http.Error(w, "delay_ms must be 0-60000", 400)
 			return
 		}
 		var bodyOverride []byte
@@ -370,7 +399,7 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "DELETE" {
 		res, err := s.DB.Exec(`DELETE FROM requests WHERE id=?`, id)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, "storage unavailable", 500)
 			return
 		}
 		if n, _ := res.RowsAffected(); n == 0 {

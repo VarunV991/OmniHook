@@ -13,6 +13,7 @@ import (
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/forward"
 	"github.com/you/omnihook/internal/ratelimit"
+	slugcheck "github.com/you/omnihook/internal/slug"
 	"github.com/you/omnihook/internal/verify"
 )
 
@@ -90,32 +91,56 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing slug", http.StatusBadRequest)
 		return
 	}
+	if !slugcheck.Valid(slug) {
+		http.Error(w, "invalid slug", http.StatusBadRequest)
+		return
+	}
 	row := h.DB.QueryRow(`SELECT provider, secret_ref, target_url, response_status, response_body, response_content_type FROM endpoints WHERE slug=?`, slug)
 	var provider, secret, target, respBody, respCtype string
 	var status int
 	if err := row.Scan(&provider, &secret, &target, &status, &respBody, &respCtype); err != nil {
-		// Auto-create on first hit (frictionless dev UX, per PLAN F1).
-		_, _ = h.DB.Exec(`INSERT OR IGNORE INTO endpoints(slug) VALUES(?)`, slug)
+		if err != sql.ErrNoRows {
+			// Storage failure: never acknowledge what we cannot verify/store.
+			http.Error(w, "capture unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		// Auto-create on first hit (frictionless dev UX).
+		if _, err := h.DB.Exec(`INSERT OR IGNORE INTO endpoints(slug) VALUES(?)`, slug); err != nil {
+			http.Error(w, "capture unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		provider, secret, target, status, respBody, respCtype = "generic", "", "", 200, `{"ok":true}`, "application/json"
 	}
 
 	limited := io.LimitReader(r.Body, h.Cfg.MaxBodyBytes+1)
-	raw, _ := io.ReadAll(limited)
-	truncated := 0
+	raw, readErr := io.ReadAll(limited)
+	if readErr != nil {
+		// Interrupted upload: do not record partial data as complete.
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
+		return
+	}
 	if int64(len(raw)) > h.Cfg.MaxBodyBytes {
-		raw = raw[:h.Cfg.MaxBodyBytes]
-		truncated = 1
+		// Oversized bodies are rejected (413), never truncated-and-verified.
+		// Raise MAX_BODY_BYTES if a provider legitimately sends more.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(`{"error":"body exceeds MAX_BODY_BYTES"}`))
+		return
 	}
 	hdrsJSON, _ := json.Marshal(r.Header)
 	res := verify.Chain(secret, provider, lowerHeaders(r), raw, time.Now())
 
 	id := uuid.NewString()
 	subPath := "/" + strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/hook/"+slug), "/")
-	_, _ = h.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, query, headers, content_type, body, body_size, truncated, verify_status, verify_error, fix_hint)
+	if _, err := h.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, query, headers, content_type, body, body_size, truncated, verify_status, verify_error, fix_hint)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, slug, r.Method, subPath, r.URL.RawQuery, string(hdrsJSON),
-		r.Header.Get("Content-Type"), raw, len(raw), truncated,
-		res.Status, res.Error, res.FixHint)
+		r.Header.Get("Content-Type"), raw, len(raw), 0,
+		res.Status, res.Error, res.FixHint); err != nil {
+		// Persistence failed: acknowledge nothing, broadcast nothing.
+		http.Error(w, "capture unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
 	h.Hub.Broadcast(id)
 

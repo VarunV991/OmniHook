@@ -209,8 +209,97 @@ func TestSlugValidation(t *testing.T) {
 			t.Fatalf("slug %q = %d, want 200", good, rec.Code)
 		}
 	}
-	if !ValidSlug("ok-1") || ValidSlug("") || ValidSlug("a/b") {
-		t.Fatal("ValidSlug wrong")
+	// Public capture path must reject invalid slugs before storing anything
+	// (e.g. /hook/-lead must not create an endpoint).
+	req := httptest.NewRequest("POST", "/hook/-lead", bytes.NewBufferString(`{}`))
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("capture bad slug = %d, want 400", rec.Code)
+	}
+	var n int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM endpoints WHERE slug='-lead'`).Scan(&n)
+	if n != 0 {
+		t.Fatal("invalid capture created an endpoint")
+	}
+}
+
+// Storage failure must never look like success: no 200, no row, no broadcast.
+func TestCaptureClosedDBIs503(t *testing.T) {
+	s := newTestServer(t)
+	s.DB.Close()
+	req := httptest.NewRequest("POST", "/hook/x", bytes.NewBufferString(`{"a":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("closed-db capture = %d, want 503", rec.Code)
+	}
+}
+
+// A1: malformed management input must never mutate state.
+func TestMalformedInputRejected(t *testing.T) {
+	s := newTestServer(t)
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		raw    string
+	}{
+		{"truncated create", "POST", "/api/endpoints", `{`},
+		{"trailing create", "POST", "/api/endpoints", `{"slug":"t1"} {}`},
+		{"empty create", "POST", "/api/endpoints", ``},
+		{"trailing replay", "POST", "/api/requests/x/replay", `{"target":"http://localhost:9"} {}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.raw))
+			rec := httptest.NewRecorder()
+			s.Mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("%s = %d, want 400", tc.name, rec.Code)
+			}
+		})
+	}
+	var n int
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM endpoints`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("malformed input created %d endpoints", n)
+	}
+}
+
+// A1: invalid mock statuses must not panic the handler.
+func TestPatchInvalidStatus(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "ps"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d", rec.Code)
+	}
+	for _, bad := range []int{99, 100, 600, 0, -1} {
+		rec = doAPI(t, s, "PATCH", "/api/endpoints/ps", map[string]any{"response_status": bad})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status %d = %d, want 400", bad, rec.Code)
+		}
+	}
+	rec = doAPI(t, s, "PATCH", "/api/endpoints/ps", map[string]any{"response_status": 201})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status 201 = %d", rec.Code)
+	}
+}
+
+// A1: health must report 503 (not ok:true) when storage is down.
+func TestHealthClosedDBIs503(t *testing.T) {
+	s := newTestServer(t)
+	s.DB.Close()
+	req := httptest.NewRequest("GET", "/health", nil)
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("closed-db health = %d, want 503", rec.Code)
+	}
+	var body map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body["ok"] == "true" {
+		t.Fatalf("health claims ok with closed DB: %s", rec.Body.String())
 	}
 }
 
