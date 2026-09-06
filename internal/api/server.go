@@ -7,10 +7,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/you/omnihook/internal/capture"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/replay"
-	"github.com/google/uuid"
 )
 
 // Server wires capture + management API + embedded UI.

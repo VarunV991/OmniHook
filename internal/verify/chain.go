@@ -30,7 +30,7 @@ type Generic struct {
 	Prefix string
 }
 
-func (g Generic) Name() string { return "generic" }
+func (g Generic) Name() string                  { return "generic" }
 func (g Generic) Detect(map[string]string) bool { return false }
 func (g Generic) Verify(secret string, h map[string]string, raw []byte, _ time.Time) Result {
 	if secret == "" || g.Header == "" {

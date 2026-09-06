@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/you/omnihook/internal/config"
-	"github.com/you/omnihook/internal/verify"
 	"github.com/google/uuid"
+	"github.com/you/omnihook/internal/config"
+	"github.com/you/omnihook/internal/forward"
+	"github.com/you/omnihook/internal/verify"
 )
 
 // Handler captures ALL /hook/:slug/* preserving raw bytes.
@@ -26,7 +27,12 @@ type Hub struct {
 }
 
 func NewHub() *Hub { return &Hub{ch: make(chan string, 256)} }
-func (h *Hub) Broadcast(id string) { select { case h.ch <- id: default: } }
+func (h *Hub) Broadcast(id string) {
+	select {
+	case h.ch <- id:
+	default:
+	}
+}
 func (h *Hub) Chan() <-chan string { return h.ch }
 
 func headersMap(r *http.Request) map[string]string {
@@ -48,11 +54,11 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var ep struct {
-		Exists               bool
-		Provider, SecretRef  string
-		Target               string
-		RespStatus           int
-		RespBody, RespCtype  string
+		Exists              bool
+		Provider, SecretRef string
+		Target              string
+		RespStatus          int
+		RespBody, RespCtype string
 	}
 	row := h.DB.QueryRow(`SELECT provider, secret_ref, target_url, response_status, response_body, response_content_type FROM endpoints WHERE slug=?`, slug)
 	var provider, secret, target, respBody, respCtype string
@@ -93,7 +99,7 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 
 	// Async forward if configured (never blocks capture response).
 	if target != "" {
-		go func() {}() // wired in Phase 3 (forward worker)
+		go forward.Deliver(h.DB, id, target)
 	}
 
 	w.Header().Set("Content-Type", respCtype)

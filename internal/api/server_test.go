@@ -121,3 +121,32 @@ func TestMain(m *testing.M) {
 	_ = os.Setenv("DATA_DIR", os.TempDir())
 	os.Exit(m.Run())
 }
+
+// Regression: a dead forward target must never fail the provider response.
+// Capture returns the configured 200 even when forwarding is impossible.
+func TestCaptureWithBrokenForwardStill200(t *testing.T) {
+	s := newTestServer(t)
+	createBody, _ := json.Marshal(map[string]string{
+		"slug": "fwd1", "provider": "generic", "target_url": "http://127.0.0.1:1/hook",
+	})
+	req := httptest.NewRequest("POST", "/api/endpoints", bytes.NewReader(createBody))
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create endpoint status = %d", rec.Code)
+	}
+	req = httptest.NewRequest("POST", "/hook/fwd1", bytes.NewBufferString(`{"x":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("capture with broken forward = %d, want 200", rec.Code)
+	}
+	req = httptest.NewRequest("GET", "/api/endpoints/fwd1/requests", nil)
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	var list []map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+		t.Fatalf("list = %q, err = %v", rec.Body.String(), err)
+	}
+}
