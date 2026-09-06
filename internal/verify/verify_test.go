@@ -57,3 +57,31 @@ func TestChainSkippedWhenNoHeaders(t *testing.T) {
 		t.Fatalf("expected SKIPPED, got %+v", got)
 	}
 }
+
+// #13: multi-signature headers accept on ANY matching v1, regardless of order.
+func TestStripeMultiSignature(t *testing.T) {
+	secret := "whsec_multi"
+	raw := []byte(`{"id":"evt_m"}`)
+	ts := time.Now().Unix()
+	mk := func(s string) string {
+		m := hmac.New(sha256.New, []byte(s))
+		fmt.Fprintf(m, "%d.%s", ts, string(raw))
+		return hex.EncodeToString(m.Sum(nil))
+	}
+	good, bad := mk(secret), mk("whsec_other")
+	for _, tc := range []struct {
+		name string
+		hdr  string
+		want string
+	}{
+		{"match first", fmt.Sprintf("t=%d,v1=%s,v1=%s", ts, good, bad), PASS},
+		{"match last", fmt.Sprintf("t=%d,v1=%s,v1=%s", ts, bad, good), PASS},
+		{"no match", fmt.Sprintf("t=%d,v1=%s,v1=%s", ts, bad, bad), FAIL},
+		{"single match", fmt.Sprintf("t=%d,v1=%s", ts, good), PASS},
+	} {
+		got := (Stripe{}).Verify(secret, map[string]string{"Stripe-Signature": tc.hdr}, raw, time.Now())
+		if got.Status != tc.want {
+			t.Fatalf("%s: status=%q err=%q", tc.name, got.Status, got.Error)
+		}
+	}
+}

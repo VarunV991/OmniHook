@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS requests (
   verify_status TEXT NOT NULL DEFAULT 'SKIPPED',
   verify_error TEXT NOT NULL DEFAULT '',
   fix_hint TEXT NOT NULL DEFAULT '',
+  verified_by TEXT NOT NULL DEFAULT '',
   received_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_requests_slug_time ON requests(endpoint_slug, received_at DESC);
@@ -53,10 +55,17 @@ CREATE TABLE IF NOT EXISTS replays (
 CREATE INDEX IF NOT EXISTS idx_replays_req_time ON replays(request_id, created_at DESC);
 `
 
+// migrate002 mirrors migrations/002_verified_by.sql for databases created by
+// older binaries (fresh schema above already includes the column; duplicate
+// application is a harmless no-op detected by error text).
+const migrate002 = `ALTER TABLE requests ADD COLUMN verified_by TEXT NOT NULL DEFAULT '';`
+
 // Open creates parent dirs, opens SQLite with WAL, applies idempotent schema.
 func Open(dbPath string) (*sql.DB, error) {
 	if dir := filepath.Dir(dbPath); dir != "." && dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
 	}
 	// modernc.org/sqlite DSN: file:path?_pragma=...
 	dsn := "file:" + dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
@@ -67,7 +76,14 @@ func Open(dbPath string) (*sql.DB, error) {
 	if err := sqldb.Ping(); err != nil {
 		return nil, err
 	}
-	if _, err := sqldb.ExecContext(context.Background(), schema); err != nil {
+	ctx := context.Background()
+	if _, err := sqldb.ExecContext(ctx, schema); err != nil {
+		_ = sqldb.Close()
+		return nil, err
+	}
+	if _, err := sqldb.ExecContext(ctx, migrate002); err != nil &&
+		!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		_ = sqldb.Close()
 		return nil, err
 	}
 	return sqldb, nil

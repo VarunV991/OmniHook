@@ -69,7 +69,10 @@ samples, and the verified test matrix: [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
 Set `target_url` on an endpoint and every capture is forwarded async (10s timeout)
 with original method, headers, and raw bytes, plus `X-Omnihook-Forward: true` and
-`X-Omnihook-Request-Id`. The provider always gets your configured mock response —
+`X-Omnihook-Request-Id`. The target is the **complete replacement URL**: the
+original subpath/query are not appended. Connection-scoped headers are stripped
+and redirects are never followed (the 3xx is recorded instead). The provider
+always gets your configured mock response —
 forwarding can never break capture. Each attempt is recorded (status + latency);
 inspect via the UI replay panel or the `replays` table. Delivery runs on a
 bounded pool (8 workers, 128 queue); drops and self-target loops are recorded,

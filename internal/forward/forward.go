@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/you/omnihook/internal/outbound"
 	"github.com/you/omnihook/internal/replay"
 )
 
@@ -36,7 +37,7 @@ func Deliver(db *sql.DB, requestID, target string) (statusCode int, latencyMs in
 		// No record: request_id would violate the replays FK; nothing to audit.
 		return 0, 0, "request not found: " + requestID
 	}
-	client := &http.Client{Timeout: timeout}
+	client := outbound.Client(timeout)
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))
 	if err != nil {
 		errMsg = err.Error()
@@ -62,6 +63,7 @@ func Deliver(db *sql.DB, requestID, target string) (statusCode int, latencyMs in
 	}
 	req.Header.Set("X-Omnihook-Forward", "true")
 	req.Header.Set("X-Omnihook-Request-Id", requestID)
+	outbound.StripHopByHop(req.Header)
 	start := time.Now()
 	resp, err := client.Do(req)
 	latencyMs = time.Since(start).Milliseconds()

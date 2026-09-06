@@ -82,6 +82,7 @@ async function show(id,defTarget){
    (q.fix_hint?`<div class="hint"><b>Fix:</b> ${esc(q.fix_hint)}</div>`:'')+
    `<h4>Headers</h4><pre>${esc(JSON.stringify(JSON.parse(q.headers||'{}'),null,2))}</pre>`+
    `<h4>Body</h4><pre>${esc((q.body_text||'').slice(0,20000))}</pre>`+
+   ((q.body_text||'').length>20000?`<small style="color:#8b949e">display truncated at 20000 chars — use show --raw or /api/requests/${esc(q.id)}/body for exact bytes</small>`:'')+
    `<h4>Delivery attempts (${reps.length})</h4><pre>${esc(reps.map(r=>`${r.created_at} → ${r.target_url} ${r.status_code} ${r.latency_ms}ms ${r.error||''}`).join('\n')||'none yet')}</pre>`+
    `<h4>Replay</h4><input id="t" value="${esc(defTarget||'http://localhost:3000/webhooks/stripe')}" placeholder="target localhost URL"/>`+
    `<div><label>times <input id="tn" type="number" value="1" min="1" max="50" style="width:80px"/></label> `+

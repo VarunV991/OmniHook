@@ -1,6 +1,7 @@
 package verify
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,15 +46,39 @@ func (g Generic) Verify(secret string, h map[string]string, raw []byte, _ time.T
 	return Result{Status: PASS, Provider: "generic"}
 }
 
+// Known providers accepted by endpoint configuration. "auto" (and "") means
+// detect from headers at capture time; the effective provider is recorded
+// per request (review #12, #14).
+var knownProviders = []string{"stripe", "github", "standard", "razorpay", "shopify", "generic", "auto"}
+
+// ValidProvider reports whether name is an accepted endpoint provider.
+func ValidProvider(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return true
+	}
+	for _, k := range knownProviders {
+		if name == k {
+			return true
+		}
+	}
+	return false
+}
+
 // Chain runs detectors in order; returns SKIPPED if none match.
+// An unknown non-empty hint is a configuration error (FAIL), never silent.
 func Chain(secret, providerHint string, headers map[string]string, raw []byte, now time.Time) Result {
 	all := []Verifier{Stripe{}, GitHub{}, Standard{}, Razorpay{}, Shopify{}}
-	if providerHint != "" && providerHint != "generic" {
+	hint := strings.ToLower(strings.TrimSpace(providerHint))
+	if hint != "" && hint != "generic" && hint != "auto" {
 		for _, v := range all {
-			if v.Name() == providerHint {
+			if v.Name() == hint {
 				return v.Verify(secret, headers, raw, now)
 			}
 		}
+		return Result{Status: FAIL, Provider: hint,
+			Error:   "unknown provider " + strconv.Quote(providerHint),
+			FixHint: "Set provider to one of stripe|github|standard|razorpay|shopify|generic|auto."}
 	}
 	for _, v := range all {
 		if v.Detect(headers) {

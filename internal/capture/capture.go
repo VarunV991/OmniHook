@@ -136,11 +136,11 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 
 	id := uuid.NewString()
 	subPath := "/" + strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/hook/"+slug), "/")
-	if _, err := h.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, query, headers, content_type, body, body_size, truncated, verify_status, verify_error, fix_hint)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	if _, err := h.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, path, query, headers, content_type, body, body_size, truncated, verify_status, verify_error, fix_hint, verified_by)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		id, slug, r.Method, subPath, r.URL.RawQuery, string(hdrsJSON),
 		r.Header.Get("Content-Type"), raw, len(raw), 0,
-		res.Status, res.Error, res.FixHint); err != nil {
+		res.Status, res.Error, res.FixHint, res.Provider); err != nil {
 		// Persistence failed: acknowledge nothing, broadcast nothing.
 		http.Error(w, "capture unavailable", http.StatusServiceUnavailable)
 		return

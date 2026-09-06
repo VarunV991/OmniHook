@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -200,6 +201,88 @@ func TestEndpointLifecycle(t *testing.T) {
 	rec = doAPI(t, s, "PATCH", "/api/endpoints/nope", map[string]string{"secret": "x"})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("patch missing = %d", rec.Code)
+	}
+}
+
+// #17: missing request is 404 (not a 200-envelope-zero); bad target is 400.
+func TestReplayValidation(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAPI(t, s, "POST", "/api/requests/nope/replay", map[string]string{"target": "http://localhost:9"})
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing id = %d, want 404", rec.Code)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO endpoints(slug) VALUES('v1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method) VALUES('v-req','v1','POST')`); err != nil {
+		t.Fatal(err)
+	}
+	rec = doAPI(t, s, "POST", "/api/requests/v-req/replay", map[string]string{"target": "://bad"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad target = %d, want 400", rec.Code)
+	}
+}
+
+// #18: explicit empty body_base64 sends an empty body (not the stored one).
+func TestReplayEmptyOverride(t *testing.T) {
+	s := newTestServer(t)
+	if _, err := s.DB.Exec(`INSERT INTO endpoints(slug) VALUES('e1')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, body) VALUES('e-req','e1','POST',?)`, []byte(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	var gotLen int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotLen = len(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	empty := ""
+	rec := doAPI(t, s, "POST", "/api/requests/e-req/replay", map[string]any{"target": target.URL, "body_base64": empty})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replay = %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotLen != 0 {
+		t.Fatalf("body len = %d, want 0 (explicit empty override)", gotLen)
+	}
+}
+
+// #12/#27: unknown providers rejected; re-create updates only given fields.
+func TestProviderEnumAndExplicitUpsert(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "pe", "provider": "strip"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown provider = %d, want 400", rec.Code)
+	}
+	rec = doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "pe", "provider": "stripe", "secret": "whsec_keep", "target_url": "http://localhost:9/x"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d", rec.Code)
+	}
+	// Re-create with slug only: secret/target/provider must survive.
+	rec = doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "pe"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-create = %d", rec.Code)
+	}
+	var provider, secret, target string
+	_ = s.DB.QueryRow(`SELECT provider, secret_ref, target_url FROM endpoints WHERE slug='pe'`).Scan(&provider, &secret, &target)
+	if provider != "stripe" || secret != "whsec_keep" || target != "http://localhost:9/x" {
+		t.Fatalf("re-create destroyed config: %q %q %q", provider, secret, target)
+	}
+	// Explicit empty secret clears.
+	rec = doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "pe", "secret": ""})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear = %d", rec.Code)
+	}
+	_ = s.DB.QueryRow(`SELECT secret_ref FROM endpoints WHERE slug='pe'`).Scan(&secret)
+	if secret != "" {
+		t.Fatalf("explicit empty secret did not clear: %q", secret)
+	}
+	// PATCH rejects unknown providers too.
+	rec = doAPI(t, s, "PATCH", "/api/endpoints/pe", map[string]string{"provider": "strip"})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("patch unknown = %d, want 400", rec.Code)
 	}
 }
 

@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/replay"
 	"github.com/you/omnihook/internal/slug"
+	"github.com/you/omnihook/internal/verify"
 	"github.com/you/omnihook/internal/webui"
 )
 
@@ -217,10 +220,10 @@ func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, out)
 	case "POST":
 		var in struct {
-			Slug     string `json:"slug"`
-			Provider string `json:"provider"`
-			Secret   string `json:"secret"`
-			Target   string `json:"target_url"`
+			Slug     string  `json:"slug"`
+			Provider *string `json:"provider"`
+			Secret   *string `json:"secret"`
+			Target   *string `json:"target_url"`
 		}
 		if err := decodeJSON(r, &in); err != nil {
 			http.Error(w, "invalid JSON: "+err.Error(), 400)
@@ -233,15 +236,38 @@ func (s *Server) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "slug must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", 400)
 			return
 		}
-		if in.Provider == "" {
-			in.Provider = "generic"
+		provider := "generic"
+		if in.Provider != nil {
+			provider = *in.Provider
 		}
-		_, err := s.DB.Exec(`INSERT INTO endpoints(slug,name,provider,secret_ref,target_url) VALUES(?,?,?,?,?)
-			ON CONFLICT(slug) DO UPDATE SET provider=excluded.provider, secret_ref=excluded.secret_ref, target_url=excluded.target_url`,
-			in.Slug, in.Slug, in.Provider, in.Secret, in.Target)
-		if err != nil {
+		if !verify.ValidProvider(provider) {
+			http.Error(w, "unknown provider (want stripe|github|standard|razorpay|shopify|generic|auto)", 400)
+			return
+		}
+		// Create never destroys (review #27): insert defaults, then apply
+		// only explicitly supplied fields. Explicit "" clears secret/target.
+		if _, err := s.DB.Exec(`INSERT OR IGNORE INTO endpoints(slug,name,provider) VALUES(?,?,?)`,
+			in.Slug, in.Slug, provider); err != nil {
 			http.Error(w, "storage unavailable", 500)
 			return
+		}
+		if in.Provider != nil {
+			if _, err := s.DB.Exec(`UPDATE endpoints SET provider=? WHERE slug=?`, provider, in.Slug); err != nil {
+				http.Error(w, "storage unavailable", 500)
+				return
+			}
+		}
+		if in.Secret != nil {
+			if _, err := s.DB.Exec(`UPDATE endpoints SET secret_ref=? WHERE slug=?`, *in.Secret, in.Slug); err != nil {
+				http.Error(w, "storage unavailable", 500)
+				return
+			}
+		}
+		if in.Target != nil {
+			if _, err := s.DB.Exec(`UPDATE endpoints SET target_url=? WHERE slug=?`, *in.Target, in.Slug); err != nil {
+				http.Error(w, "storage unavailable", 500)
+				return
+			}
 		}
 		base := s.Cfg.PublicURL
 		if base == "" {
@@ -289,6 +315,10 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 				updates["name"] = *in.Name
 			}
 			if in.Provider != nil {
+				if !verify.ValidProvider(*in.Provider) {
+					http.Error(w, "unknown provider (want stripe|github|standard|razorpay|shopify|generic|auto)", 400)
+					return
+				}
 				updates["provider"] = *in.Provider
 			}
 			if in.Secret != nil {
@@ -412,7 +442,7 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Target  string            `json:"target"`
 			Headers map[string]string `json:"headers"`
-			BodyB64 string            `json:"body_base64"`
+			BodyB64 *string           `json:"body_base64"`
 			Times   int               `json:"times"`
 			DelayMs int               `json:"delay_ms"`
 			Resign  bool              `json:"resign"`
@@ -423,6 +453,21 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.Target == "" {
 			http.Error(w, "target required", 400)
+			return
+		}
+		// Validate before doing any work: malformed target or missing
+		// request fail fast with a clear status (review #17).
+		if _, err := url.ParseRequestURI(in.Target); err != nil {
+			http.Error(w, "invalid target URL", 400)
+			return
+		}
+		var exists bool
+		if err := s.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM requests WHERE id=?)`, id).Scan(&exists); err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		if !exists {
+			http.Error(w, "request not found", 404)
 			return
 		}
 		times := in.Times
@@ -438,23 +483,40 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var bodyOverride []byte
-		if in.BodyB64 != "" {
+		var haveOverride bool
+		if in.BodyB64 != nil {
+			// Pointer presence distinguishes omitted from explicitly empty:
+			// "" is a valid override meaning an empty body (review #18).
 			var err error
-			bodyOverride, err = base64.StdEncoding.DecodeString(in.BodyB64)
+			bodyOverride, err = base64.StdEncoding.DecodeString(*in.BodyB64)
 			if err != nil {
 				http.Error(w, "body_base64: invalid base64", 400)
 				return
 			}
+			haveOverride = true
 		}
+		if !haveOverride {
+			bodyOverride = nil
+		}
+		// Overall deadline so a 50x batch cannot run for 12 minutes while the
+		// caller watches; per-send timeouts still apply inside.
+		batchCtx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
 		results := make([]map[string]any, 0, times)
 		for i := 0; i < times; i++ {
 			if i > 0 && in.DelayMs > 0 {
 				select {
-				case <-r.Context().Done():
+				case <-batchCtx.Done():
 					writeJSON(w, map[string]any{"results": results, "cancelled": true})
 					return
 				case <-time.After(time.Duration(in.DelayMs) * time.Millisecond):
 				}
+			}
+			select {
+			case <-batchCtx.Done():
+				writeJSON(w, map[string]any{"results": results, "cancelled": true})
+				return
+			default:
 			}
 			code, lat, body := replay.SendWithOptions(s.DB, id, in.Target,
 				replay.Options{Headers: in.Headers, Body: bodyOverride, Resign: in.Resign})
@@ -469,6 +531,22 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := rest
+	if strings.HasSuffix(rest, "/body") && r.Method == "GET" {
+		rid := strings.TrimSuffix(rest, "/body")
+		var body []byte
+		var ctype string
+		if err := s.DB.QueryRow(`SELECT body, content_type FROM requests WHERE id=?`, rid).Scan(&body, &ctype); err != nil {
+			http.Error(w, "not found", 404)
+			return
+		}
+		// Raw bytes, byte-identical to what the provider sent (review #16).
+		if ctype == "" {
+			ctype = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", ctype)
+		_, _ = w.Write(body)
+		return
+	}
 	if strings.HasSuffix(rest, "/replays") && r.Method == "GET" {
 		rid := strings.TrimSuffix(rest, "/replays")
 		rows, err := s.DB.Query(`SELECT target_url, status_code, latency_ms, error, created_at FROM replays WHERE request_id=? ORDER BY created_at DESC LIMIT 50`, rid)
@@ -524,5 +602,6 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 		"id": id, "method": method, "path": path, "headers": headers,
 		"content_type": ctype, "verify_status": vs, "verify_error": verr,
 		"fix_hint": hint, "received_at": at, "query": query, "body_text": string(body),
+		"body_base64": base64.StdEncoding.EncodeToString(body),
 	})
 }
