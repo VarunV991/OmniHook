@@ -6,6 +6,12 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- Replay upgrades (closes #5): `times` (1–50) + `delay_ms` multi-replay with
+  per-attempt results (API array, CLI `[i/N]` lines, UI times input);
+  `resign` refreshes Stripe/GitHub/Standard/Razorpay/Shopify signatures with
+  the endpoint secret so stale captures verify PASS (API flag, CLI `--resign`,
+  UI checkbox); replay restores original headers (byte-faithful) with
+  resigned/explicit overrides winning.
 - Shopify verifier (`X-Shopify-Hmac-Sha256` base64 HMAC + topic/domain detect,
   incl. hex-instead-of-base64 hint) and Clerk compatibility proven via Standard
   `svix-*` headers; matrix now 29/29; `docs/PROVIDERS.md` §§5–6 (closes #6).

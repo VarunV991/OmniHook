@@ -51,7 +51,7 @@ Everything works offline against the local DB file — no server needed except `
 omnihook new stripe1 --provider stripe --secret whsec_... --target http://localhost:3000/hook
 omnihook list
 omnihook show <request-id>
-omnihook replay <request-id> --target http://localhost:3000/hook --header X-Debug=1
+omnihook replay <request-id> --target http://localhost:3000/hook --header X-Debug=1 --times 5 --resign
 omnihook verify --provider stripe --secret whsec_... --headers @h.json --body @b.bin  # exit 0 PASS, 2 FAIL
 omnihook gc --retention-hours 48
 omnihook up --port 8080
