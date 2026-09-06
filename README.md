@@ -75,12 +75,28 @@ curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json'
 
 ### Endpoints, slugs, and limits
 
-- Slugs match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (same rule in CLI and API).
+- Slugs match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (same rule in CLI, API, and capture).
 - Full endpoint lifecycle: `GET/PATCH/DELETE /api/endpoints/:slug`,
   `DELETE /api/endpoints/:slug/requests`, `DELETE /api/requests/:id`.
   Re-running `omnihook new` (or `POST /api/endpoints`) upserts provider/secret/target.
-- Set `ACCESS_TOKEN` to gate the UI + API; the UI prompts once and remembers it.
-  `/hook/*` stays public by design.
+- Set `ACCESS_TOKEN` to gate the UI + API; sign in at `/login` (or `/api/login`),
+  which sets an HttpOnly session cookie (12h). `/hook/*` stays public by design.
+
+## Exposing via tunnel (read this before you forward a port)
+
+OmniHook binds loopback (`127.0.0.1`) by default — nothing else on the network
+can reach the UI, API, or replay. To receive real provider webhooks you have
+two safe options:
+
+1. **Tunnel to loopback (recommended):** `cloudflared tunnel --url http://localhost:8080`
+   with `PUBLIC_URL=https://<you>.trycloudflare.com`. The server never listens
+   externally; only the tunnel forwards to it.
+2. **Bind externally:** `omnihook up --bind 0.0.0.0` (or `BIND=0.0.0.0`).
+   Then `ACCESS_TOKEN` is **required hygiene** — the server prints a stderr
+   WARNING without it. Management stays gated; `/hook/*` is public by design.
+
+Never expose an untokened instance: stored payloads and replay can touch your
+local services.
 
 ## Signature verification (the useful part)
 
@@ -95,6 +111,7 @@ Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), 
 
 | Env | Default | Meaning |
 |-----|---------|---------|
+| `BIND` | `127.0.0.1` | Listen address. Loopback by default; set `0.0.0.0` deliberately to expose (see tunnel section) |
 | `PORT` | `8080` | HTTP port (UI + API + capture) |
 | `DATA_DIR` | `./data` | SQLite lives here (`omnihook.db`) unless `DATABASE_URL` is set |
 | `DATABASE_URL` | unset | Full SQLite path; overrides `DATA_DIR/omnihook.db` when set |

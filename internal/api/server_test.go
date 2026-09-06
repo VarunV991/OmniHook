@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,12 @@ import (
 // newTestServer spins up the full stack (SQLite temp file + handlers) in-process.
 // Hermetic: no background processes, no fixed ports — safe for CI.
 func newTestServer(t *testing.T) *Server {
+	return newTestServerWithToken(t, "")
+}
+
+// newTestServerWithToken wires ACCESS_TOKEN before routes are registered
+// (auth wrapping happens at registration, so late mutation would not gate).
+func newTestServerWithToken(t *testing.T, token string) *Server {
 	t.Helper()
 	cfg := config.Config{
 		Port:         "0",
@@ -26,6 +33,7 @@ func newTestServer(t *testing.T) *Server {
 		DBPath:       filepath.Join(t.TempDir(), "test.db"),
 		RetentionHrs: 168,
 		MaxBodyBytes: 1 << 20,
+		AccessToken:  token,
 		Version:      "test",
 	}
 	sqldb, err := db.Open(cfg.DBPath)
@@ -300,6 +308,84 @@ func TestHealthClosedDBIs503(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if body["ok"] == "true" {
 		t.Fatalf("health claims ok with closed DB: %s", rec.Body.String())
+	}
+}
+
+// A2: gated mode serves a login shell (not a bare 401) and the cookie flow works.
+func TestLoginFlow(t *testing.T) {
+	s := newTestServerWithToken(t, "s3cret")
+
+	// Fresh browser: login shell, not 401.
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "/api/login") {
+		t.Fatalf("root = %d, want login shell", rec.Code)
+	}
+	// API still 401s without credentials.
+	req = httptest.NewRequest("GET", "/api/endpoints", nil)
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anon api = %d, want 401", rec.Code)
+	}
+	// Wrong token rejected.
+	bad, _ := json.Marshal(map[string]string{"token": "nope"})
+	req = httptest.NewRequest("POST", "/api/login", bytes.NewReader(bad))
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad login = %d, want 401", rec.Code)
+	}
+	// Right token sets HttpOnly cookie.
+	good, _ := json.Marshal(map[string]string{"token": "s3cret"})
+	req = httptest.NewRequest("POST", "/api/login", bytes.NewReader(good))
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login = %d", rec.Code)
+	}
+	var session *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "omnihook_token" {
+			session = c
+		}
+	}
+	if session == nil || !session.HttpOnly || session.Value == "" {
+		t.Fatalf("no HttpOnly session cookie: %v", rec.Result().Cookies())
+	}
+	// Cookie grants API access.
+	req = httptest.NewRequest("GET", "/api/endpoints", nil)
+	req.AddCookie(session)
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie api = %d, want 200", rec.Code)
+	}
+	// Logout clears the cookie.
+	req = httptest.NewRequest("POST", "/api/logout", nil)
+	req.AddCookie(session)
+	rec = httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout = %d", rec.Code)
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "omnihook_token" && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("logout did not clear cookie")
+	}
+	// Ungated server redirects /login to the app.
+	s2 := newTestServer(t)
+	req = httptest.NewRequest("GET", "/login", nil)
+	rec = httptest.NewRecorder()
+	s2.Mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("ungated /login = %d, want 302", rec.Code)
 	}
 }
 
