@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/forward"
+	"github.com/you/omnihook/internal/ratelimit"
 	"github.com/you/omnihook/internal/verify"
 )
 
@@ -19,6 +20,29 @@ type Handler struct {
 	DB  *sql.DB
 	Cfg config.Config
 	Hub *Hub
+	// Limiter gates responses (store always, answer 429 when empty).
+	// Nil means no limiting. NewHandler wires it from Cfg.
+	Limiter *ratelimit.Limiter
+}
+
+// NewHandler builds a Handler with rate limiting from cfg (0 disables).
+func NewHandler(db *sql.DB, cfg config.Config, hub *Hub) *Handler {
+	return &Handler{DB: db, Cfg: cfg, Hub: hub, Limiter: ratelimit.New(cfg.RateLimitRPS)}
+}
+
+// clientIP prefers X-Forwarded-For (tunnel setups) then RemoteAddr.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.Index(xff, ","); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i >= 0 {
+		return host[:i]
+	}
+	return host
 }
 
 // Hub broadcasts new request IDs over SSE.
@@ -100,6 +124,16 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 	// Async forward if configured (never blocks capture response).
 	if target != "" {
 		go forward.Deliver(h.DB, id, target)
+	}
+
+	// Rate gate on the RESPONSE only: the request is already stored as
+	// evidence; 429 + Retry-After tells the provider to back off.
+	if h.Limiter != nil && !h.Limiter.Allow(clientIP(r)) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited","retry_after":1}`))
+		return
 	}
 
 	w.Header().Set("Content-Type", respCtype)
