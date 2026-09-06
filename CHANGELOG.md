@@ -6,6 +6,12 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- CLI (closes #3): `new/list/show/replay/verify/gc`, `up --port`; flags accepted
+  before or after positionals; exit codes 0 ok / 1 error / 2 verify-FAIL.
+  `verify` is fully offline (headers/body files, `@path` or stdin).
+- Provider test matrix: 21-case `TestProviderMatrix` (valid, auto-detect,
+  tampered/wrong-secret/expired/missing-secret across Stripe, GitHub, Standard,
+  Razorpay) + `docs/PROVIDERS.md` (connect guides, samples, live E2E results).
 - Forward worker (`internal/forward`): endpoints with `target_url` auto-forward
   captured requests (method, original headers, raw bytes) async with 10s timeout;
   `X-Omnihook-Forward` + `X-Omnihook-Request-Id` headers; outcome recorded in
