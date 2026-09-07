@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,6 +145,15 @@ func TestProviderMatrix(t *testing.T) {
 		{"stripe no secret", "stripe", "", s.stripeHeaders(stripeBody, ts), stripeBody, FAIL, true},
 		{"github no secret", "github", "", s.githubHeaders(githubBody), githubBody, FAIL, true},
 		{"shopify no secret", "shopify", "", s.shopifyHeaders(shopifyBody), shopifyBody, FAIL, true},
+		// Pinned provider but no signature headers at all (plain curl test,
+		// stripped headers): SKIPPED, never FAIL.
+		{"stripe pinned no headers", "stripe", s.stripeSecret, map[string]string{"Content-Type": "application/json"}, stripeBody, SKIPPED, false},
+		{"github pinned no headers", "github", s.githubSecret, map[string]string{"Content-Type": "application/json"}, githubBody, SKIPPED, false},
+		{"standard pinned no headers", "standard", s.standardSecret, map[string]string{"Content-Type": "application/json"}, standardBody, SKIPPED, false},
+		{"razorpay pinned no headers", "razorpay", s.razorpaySecret, map[string]string{"Content-Type": "application/json"}, razorpayBody, SKIPPED, false},
+		{"shopify pinned no headers", "shopify", s.razorpaySecret, map[string]string{"Content-Type": "application/json"}, shopifyBody, SKIPPED, false},
+		// Pinned provider with present-but-broken headers still FAILs.
+		{"stripe pinned malformed", "stripe", s.stripeSecret, map[string]string{"Stripe-Signature": "garbage"}, stripeBody, FAIL, true},
 		// Unknown traffic is SKIPPED, never hard-failed.
 		{"unknown skips", "", "x", map[string]string{"Content-Type": "application/json"}, []byte(`{}`), SKIPPED, false},
 	}
@@ -162,6 +172,17 @@ func TestProviderMatrix(t *testing.T) {
 				t.Fatal("FAIL without error message")
 			}
 		})
+	}
+}
+
+// Pinned-but-headerless captures explain themselves instead of FAILing.
+func TestPinnedNoHeadersExplains(t *testing.T) {
+	got := Chain("whsec_x", "stripe", map[string]string{}, []byte(`{}`), time.Now())
+	if got.Status != SKIPPED || got.Provider != "stripe" {
+		t.Fatalf("got %+v", got)
+	}
+	if !strings.Contains(got.Error, "no stripe signature headers") {
+		t.Fatalf("missing explanation: %q", got.Error)
 	}
 }
 

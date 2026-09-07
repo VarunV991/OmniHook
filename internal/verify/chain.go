@@ -73,6 +73,13 @@ func Chain(secret, providerHint string, headers map[string]string, raw []byte, n
 	if hint != "" && hint != "generic" && hint != "auto" {
 		for _, v := range all {
 			if v.Name() == hint {
+				// Pinned provider but none of its signature headers present:
+				// nothing to verify (plain test request, stripped headers).
+				// SKIPPED, not FAIL — the capture itself is still stored.
+				if !v.Detect(headers) {
+					return Result{Status: SKIPPED, Provider: hint,
+						Error: "no " + hint + " signature headers present; captured without verification"}
+				}
 				return v.Verify(secret, headers, raw, now)
 			}
 		}
