@@ -5,6 +5,10 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 
 ## [Unreleased] (develop)
 
+Added:
+- Pinned provider with absent signature headers records SKIPPED (not FAIL);
+  present-but-broken signatures still FAIL (matrix 35/35).
+
 ## [v0.3.0] - 2026-09-07
 
 Added:

@@ -74,9 +74,9 @@ Unknown traffic is captured and replayable. Both `generic` and `auto` select a s
 
 ## 8. Test results
 
-Unit matrix `go test ./internal/verify/ -run TestProviderMatrix` — 29/29 PASS
-(21 original cases plus 8 new: Shopify valid/auto-detect/tampered/wrong-secret/
-hex-instead-of-base64/no-secret, Clerk pinned/auto-detect via Standard):
+Unit matrix `go test ./internal/verify/ -run TestProviderMatrix` — 35/35 PASS
+(29 original cases plus: pinned provider with absent headers → SKIPPED for all
+5 verifiers, pinned-but-malformed → FAIL):
 
 | Provider | valid | auto-detect | tampered→FAIL+hint | wrong secret→FAIL | expired→FAIL | no secret→FAIL+hint |
 |---|---|---|---|---|---|---|
@@ -87,6 +87,10 @@ hex-instead-of-base64/no-secret, Clerk pinned/auto-detect via Standard):
 | Shopify | ✅ | ✅ | ✅ (+hex-vs-base64) | ✅ | n/a | ✅ |
 | Clerk (via standard) | ✅ | ✅ | — | — | — | — |
 | Unknown | — | — | — | — | — | SKIPPED ✅ |
+
+A pinned endpoint receiving a request *without* that provider's signature
+headers (plain curl test, stripped headers) records SKIPPED with an explanatory
+note — FAIL is reserved for present-but-invalid signatures.
 
 Live binary E2E (`bin/omnihook.exe`, server + CLI, real HMAC over HTTP):
 `new` → signed `POST /hook/stripe1` → `list` shows 1 request → inbox `VERIFY_STATUS: PASS` → `show` prints body → `verify` exit 0 → tampered body exit 2 with Express/Spring/FastAPI/Django fix hint → `replay` 200 in 20ms → `gc` 0 deleted → **E2E_PASS**.
