@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,6 +88,46 @@ func writeJSON(w http.ResponseWriter, v any) {
 // maxMgmtBody caps management JSON input (endpoints, replay options).
 const maxMgmtBody = 64 * 1024
 
+// cursor is a keyset page position: (received_at, id) of the last row seen.
+// Empty cursor starts from the newest.
+type cursor struct {
+	Time string
+	ID   string
+}
+
+func parseCursor(r *http.Request) (limit int, c cursor, err error) {
+	limit = 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, perr := strconv.Atoi(v)
+		if perr != nil || n < 1 || n > 100 {
+			return 0, cursor{}, fmt.Errorf("limit must be 1-100")
+		}
+		limit = n
+	}
+	if v := r.URL.Query().Get("cursor"); v != "" {
+		parts := strings.SplitN(v, "|", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return 0, cursor{}, fmt.Errorf("cursor must be received_at|id")
+		}
+		c = cursor{Time: parts[0], ID: parts[1]}
+	} else {
+		// Start beyond any RFC3339 timestamp stored by OmniHook.
+		c = cursor{Time: "9999-12-31T23:59:59.999999999Z", ID: "~"}
+	}
+	return limit, c, nil
+}
+
+// nextCursor builds the cursor for the following page. rows is the raw
+// limit+1 fetch: a cursor exists only when an extra row proves another page.
+// The caller must trim rows to limit itself.
+func nextCursor(rows []map[string]string, limit int) (page []map[string]string, cursor string) {
+	if len(rows) > limit {
+		last := rows[limit-1]
+		return rows[:limit], last["received_at"] + "|" + last["id"]
+	}
+	return rows, ""
+}
+
 // decodeJSON bounds input size and rejects malformed or trailing JSON so a
 // truncated `{` can never create state or trigger a partial action.
 func decodeJSON(r *http.Request, v any) error {
@@ -148,6 +189,42 @@ func (s *Server) routes() {
 	m.HandleFunc("/api/endpoints", s.auth(s.handleEndpoints))
 	m.HandleFunc("/api/endpoints/", s.auth(s.handleEndpointSub))
 	m.HandleFunc("/api/requests/", s.auth(s.handleRequestSub))
+	// Aggregated inbox: recent requests across endpoints in ONE call, so the
+	// UI does not fan out 1+N requests per refresh (review #25).
+	m.HandleFunc("/api/requests", s.auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		limit, cursor, err := parseCursor(r)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		rows, qerr := s.DB.Query(`SELECT id, endpoint_slug, method, path, verify_status, strftime('%Y-%m-%dT%H:%M:%fZ', received_at) FROM requests
+			WHERE (strftime('%Y-%m-%dT%H:%M:%fZ', received_at) < ? OR (strftime('%Y-%m-%dT%H:%M:%fZ', received_at) = ? AND id < ?))
+			ORDER BY strftime('%Y-%m-%dT%H:%M:%fZ', received_at) DESC, id DESC LIMIT ?`, cursor.Time, cursor.Time, cursor.ID, limit+1)
+		if qerr != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		defer rows.Close()
+		out := []map[string]string{}
+		for rows.Next() {
+			var id, slug, method, path, vs, at string
+			if err := rows.Scan(&id, &slug, &method, &path, &vs, &at); err != nil {
+				http.Error(w, "storage unavailable", 500)
+				return
+			}
+			out = append(out, map[string]string{"id": id, "endpoint": slug, "method": method, "path": path, "verify_status": vs, "received_at": at})
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		out, cur := nextCursor(out, limit)
+		writeJSON(w, map[string]any{"requests": out, "next_cursor": cur})
+	}))
 }
 
 // handleLogin exchanges the access token for a session cookie (review #04).
@@ -288,9 +365,14 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 		case "GET":
 			var name, provider, target string
 			var status int
-			if err := s.DB.QueryRow(`SELECT name, provider, target_url, response_status FROM endpoints WHERE slug=?`, slug).
-				Scan(&name, &provider, &target, &status); err != nil {
+			err := s.DB.QueryRow(`SELECT name, provider, target_url, response_status FROM endpoints WHERE slug=?`, slug).
+				Scan(&name, &provider, &target, &status)
+			if err == sql.ErrNoRows {
 				http.Error(w, "not found", 404)
+				return
+			}
+			if err != nil {
+				http.Error(w, "storage unavailable", 500)
 				return
 			}
 			writeJSON(w, map[string]any{"slug": slug, "name": name, "provider": provider, "target_url": target, "response_status": status})
@@ -379,8 +461,15 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "requests" && r.Method == "GET" {
-		rows, err := s.DB.Query(`SELECT id, method, path, verify_status, received_at FROM requests WHERE endpoint_slug=? ORDER BY received_at DESC LIMIT 50`, slug)
+		limit, cursor, err := parseCursor(r)
 		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		rows, qerr := s.DB.Query(`SELECT id, method, path, verify_status, strftime('%Y-%m-%dT%H:%M:%fZ', received_at) FROM requests
+			WHERE endpoint_slug=? AND (strftime('%Y-%m-%dT%H:%M:%fZ', received_at) < ? OR (strftime('%Y-%m-%dT%H:%M:%fZ', received_at) = ? AND id < ?))
+			ORDER BY strftime('%Y-%m-%dT%H:%M:%fZ', received_at) DESC, id DESC LIMIT ?`, slug, cursor.Time, cursor.Time, cursor.ID, limit+1)
+		if qerr != nil {
 			http.Error(w, "storage unavailable", 500)
 			return
 		}
@@ -398,7 +487,8 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "storage unavailable", 500)
 			return
 		}
-		writeJSON(w, out)
+		out, cur := nextCursor(out, limit)
+		writeJSON(w, map[string]any{"requests": out, "next_cursor": cur})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "requests" && r.Method == "DELETE" {
@@ -412,20 +502,45 @@ func (s *Server) handleEndpointSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "stream" {
-		// SSE live stream.
+		// SSE live stream, filtered to this endpoint (review #23).
+		var exists bool
+		if err := s.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM endpoints WHERE slug=?)`, slug).Scan(&exists); err != nil {
+			http.Error(w, "storage unavailable", 500)
+			return
+		}
+		if !exists {
+			http.Error(w, "unknown endpoint", 404)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		fl, _ := w.(http.Flusher)
-		ch, unsub := s.Cap.Hub.Subscribe()
+		ch, unsub := s.Cap.Hub.Subscribe(slug)
 		defer unsub()
 		ctx := r.Context()
+		// Initial flush + heartbeat keep idle proxies from closing the stream.
+		_, _ = w.Write([]byte("event: ready\ndata: " + slug + "\n\n"))
+		if fl != nil {
+			fl.Flush()
+		}
+		beat := time.NewTicker(20 * time.Second)
+		defer beat.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case id := <-ch:
-				_, _ = w.Write([]byte("event: request\ndata: " + id + "\n\n"))
+			case <-beat.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				if fl != nil {
+					fl.Flush()
+				}
+			case ev := <-ch:
+				if _, err := w.Write([]byte("event: request\ndata: " + ev.ID + "\n\n")); err != nil {
+					return // slow/dead reader: stop, drops are documented
+				}
 				if fl != nil {
 					fl.Flush()
 				}
@@ -592,7 +707,7 @@ func (s *Server) handleRequestSub(w http.ResponseWriter, r *http.Request) {
 	}
 	var method, path, headers, ctype, vs, verr, hint, at, query string
 	var body []byte
-	err := s.DB.QueryRow(`SELECT method, path, headers, content_type, verify_status, verify_error, fix_hint, received_at, query, body FROM requests WHERE id=?`, id).
+	err := s.DB.QueryRow(`SELECT method, path, headers, content_type, verify_status, verify_error, fix_hint, strftime('%Y-%m-%dT%H:%M:%fZ', received_at), query, body FROM requests WHERE id=?`, id).
 		Scan(&method, &path, &headers, &ctype, &vs, &verr, &hint, &at, &query, &body)
 	if err != nil {
 		http.Error(w, "not found", 404)

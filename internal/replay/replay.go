@@ -5,10 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"net/textproto"
-	"net/url"
 	"strings"
 	"time"
 
@@ -17,32 +15,12 @@ import (
 	"github.com/you/omnihook/internal/verify"
 )
 
-var blockedHosts = []string{"169.254.169.254", "metadata.google.internal", "metadata.google", "instance-data"}
-
-// SSRF guard: block cloud metadata hosts. Localhost is allowed by design.
-func blocked(target string) bool {
-	u, err := url.Parse(target)
-	if err != nil {
-		return true
-	}
-	host := strings.ToLower(u.Hostname())
-	for _, b := range blockedHosts {
-		if host == b {
-			return true
-		}
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLinkLocalUnicast() {
-		// 169.254.x.x link-local (metadata) blocked; 127.0.0.1 allowed.
-		if strings.HasPrefix(host, "169.254.") {
-			return true
-		}
-	}
-	return false
-}
-
 // Blocked reports whether target is barred by the SSRF guard.
 // Localhost is allowed by design (forwarding to local dev is the product).
-func Blocked(target string) bool { return blocked(target) }
+func Blocked(target string) bool { return outbound.Blocked(target) }
+
+// blocked is retained for package-local compatibility with the regression tests.
+func blocked(target string) bool { return Blocked(target) }
 
 // Send replays a stored request body to target, records result.
 func Send(db *sql.DB, requestID, target string, headerOverride map[string]string, bodyOverride []byte) (int, int64, string) {
@@ -71,7 +49,7 @@ func SendWithOptions(db *sql.DB, requestID, target string, opts Options) (int, i
 	if err != nil {
 		return 0, 0, "request not found: " + requestID
 	}
-	if blocked(target) {
+	if outbound.Blocked(target) {
 		msg := "blocked: SSRF guard (metadata host)"
 		_, _ = db.Exec(`INSERT INTO replays(id, request_id, target_url, status_code, latency_ms, error) VALUES(?,?,?,?,?,?)`,
 			uuid.NewString(), requestID, target, 0, 0, msg)

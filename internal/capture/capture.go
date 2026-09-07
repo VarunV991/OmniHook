@@ -51,32 +51,52 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// Hub broadcasts new request IDs over SSE. Each subscriber gets its own
-// channel so multiple tabs/clients all receive every event (a single shared
-// channel would deal messages out to competing readers instead).
+// Hub broadcasts captures to SSE subscribers. Each subscriber gets its own
+// channel (optionally filtered by endpoint slug) so multiple tabs/clients all
+// receive every event (a single shared channel would deal messages out to
+// competing readers instead).
 type Hub struct {
-	mu   sync.Mutex
-	subs map[chan string]struct{}
+	mu    sync.Mutex
+	subs  map[chan Event]string
+	drops uint64
 }
 
-func NewHub() *Hub { return &Hub{subs: map[chan string]struct{}{}} }
+// Event is one capture notification.
+type Event struct {
+	Endpoint string
+	ID       string
+}
 
-func (h *Hub) Broadcast(id string) {
+func NewHub() *Hub { return &Hub{subs: map[chan Event]string{}} }
+
+func (h *Hub) Broadcast(endpoint, id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for ch := range h.subs {
+	for ch, want := range h.subs {
+		if want != "" && want != endpoint {
+			continue
+		}
 		select {
-		case ch <- id:
-		default: // slow reader: drop, live list refreshes anyway
+		case ch <- Event{endpoint, id}:
+		default: // slow reader: drop; reconciliation refreshes the list.
+			h.drops++
 		}
 	}
 }
 
-// Subscribe returns a channel receiving every broadcast until unsub is called.
-func (h *Hub) Subscribe() (chan string, func()) {
-	ch := make(chan string, 16)
+// Subscribe returns a channel receiving every broadcast (or only endpoint's
+// when slug != "") until unsub is called.
+// DropCount reports notifications discarded because subscribers were not reading.
+func (h *Hub) DropCount() uint64 {
 	h.mu.Lock()
-	h.subs[ch] = struct{}{}
+	defer h.mu.Unlock()
+	return h.drops
+}
+
+func (h *Hub) Subscribe(slug string) (chan Event, func()) {
+	ch := make(chan Event, 16)
+	h.mu.Lock()
+	h.subs[ch] = slug
 	h.mu.Unlock()
 	return ch, func() {
 		h.mu.Lock()
@@ -146,7 +166,7 @@ func (h *Handler) ServeHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Hub.Broadcast(id)
+	h.Hub.Broadcast(slug, id)
 
 	// Async forward if configured (never blocks capture response).
 	// Marked requests (already forwarded/replayed by OmniHook) are captured

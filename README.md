@@ -2,11 +2,11 @@
 
 Capture, verify, replay webhooks locally. No account. Data stays in your SQLite file.
 
-> Status: `v0.2.0` — complete local dev loop (forward, CLI, 6 providers, replay upgrades, GC + rate limits). See [CHANGELOG.md](CHANGELOG.md) for releases and [docs/MANUAL-TEST.md](docs/MANUAL-TEST.md) to try it.
+> Latest tagged release: `v0.2.0`. This branch also contains unreleased review fixes; see [CHANGELOG.md](CHANGELOG.md). Start with [why it exists](docs/why.md), [architecture](docs/architecture.md), [a debugging session](docs/flow.md), or the [manual test guide](docs/MANUAL-TEST.md).
 
 ## Why
 
-Debugging webhooks today means tunnels with changing URLs, single-provider CLIs with synthetic events, silent HMAC failures from parsed-instead-of-raw bodies, and hosted inspectors that keep your payment payloads. OmniHook gives you a permanent local capture URL, tells you **why** a signature failed (with the framework fix), and replays the exact bytes to localhost as many times as you need — offline after capture.
+Debugging webhooks today means tunnels with changing URLs, single-provider CLIs with synthetic events, silent HMAC failures from parsed-instead-of-raw bodies, and hosted inspectors that keep your payment payloads. OmniHook gives you a stable local capture path (public tunnel URLs may change), reports signature failures with error-specific guidance, and replays the exact bytes to localhost as many times as you need — offline after capture.
 
 **Non-goals:** not a production gateway (no retries/DLQ/FIFO/portal). For sending webhooks to your users, use Svix/Hookdeck Outpost. For local debugging, use OmniHook.
 
@@ -45,12 +45,12 @@ Public URL for real providers (bring your own tunnel, v1 has no hosted relay):
 
 ```bash
 cloudflared tunnel --url http://localhost:8080
-PUBLIC_URL=https://<you>.trycloudflare.com go run ./cmd/omnihook up
+ACCESS_TOKEN=<choose-a-secret> PUBLIC_URL=https://<you>.trycloudflare.com go run ./cmd/omnihook up
 ```
 
 ## CLI
 
-Everything works offline against the local DB file — no server needed except `up`:
+Commands use the local DB directly — no OmniHook server needed except `up`. Replay still needs network access to its target:
 
 ```bash
 omnihook new stripe1 --provider stripe --secret whsec_... --target http://localhost:3000/hook
@@ -89,7 +89,7 @@ curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json'
 - Slugs match `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$` (same rule in CLI, API, and capture).
 - Full endpoint lifecycle: `GET/PATCH/DELETE /api/endpoints/:slug`,
   `DELETE /api/endpoints/:slug/requests`, `DELETE /api/requests/:id`.
-  Re-running `omnihook new` (or `POST /api/endpoints`) upserts provider/secret/target.
+  Re-running `omnihook new` (or `POST /api/endpoints`) updates only explicitly supplied fields; omitted values stay unchanged.
 - Set `ACCESS_TOKEN` to gate the UI + API; sign in at `/login` (or `/api/login`),
   which sets an HttpOnly session cookie (12h). `/hook/*` stays public by design.
 
@@ -111,7 +111,7 @@ local services.
 
 ## Signature verification (the useful part)
 
-Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Shopify** (`X-Shopify-Hmac-Sha256`, base64), **Generic HMAC**. Auto-detected from headers or pinned per endpoint. Every `FAIL` ships a fix hint:
+Supported: **Stripe** (`Stripe-Signature`), **GitHub** (`X-Hub-Signature-256`), **Standard Webhooks** (`Webhook-Id/Timestamp/Signature` — Svix/OpenAI/Anthropic/Clerk/Resend shape), **Razorpay**, **Shopify** (`X-Shopify-Hmac-Sha256`, base64). Auto-detected from headers or pinned per endpoint. `generic` currently uses auto-detection and otherwise returns `SKIPPED`; custom HMAC header/prefix configuration is not exposed by the API or CLI. Failure messages distinguish secret, header, timestamp, and body problems. Raw-body handling examples:
 
 - Express: `app.post('/hook', express.raw({type:'application/json'}))` — never `express.json()` before HMAC.
 - Spring Boot: `@RequestBody byte[] raw` + `Mac.getInstance("HmacSHA256")`.
@@ -146,13 +146,16 @@ omnihook/
 │   ├── forward/           async forward worker (records to replays, SSRF-guarded)
 │   ├── gc/                retention cleanup (CLI one-shot + hourly scheduler)
 │   ├── ratelimit/         per-IP token bucket for capture responses
+│   ├── outbound/          shared target policy and header filtering
+│   ├── slug/              shared endpoint-name validation
 │   ├── replay/            replay client (options, re-sign, SSRF guard)
 │   ├── verify/            stripe|github|standard|razorpay|shopify|generic + chain + re-sign
 │   └── webui/             inbox + login UI, embedded in the binary (`WEB_DIR` overrides)
-├── migrations/            idempotent SQL (source of truth; mirrored inline in db.go)
-├── scripts/checkdocs/     docs-freshness gates (CHANGELOG, README env table, schema sync)
+├── migrations/            embedded, versioned SQL upgrades (single schema source)
+├── scripts/checkdocs/     docs-freshness gates (CHANGELOG, README env table, migrations and documented capabilities)
 ├── docs/                  PROVIDERS.md (connect guides + test results)
 │                          MANUAL-TEST.md (hands-on playbook, per-OS)
+│                          architecture.md / flow.md / why.md / storage.md
 ├── .github/workflows/     CI (make verify)
 ├── Dockerfile / compose / .goreleaser.yml / Makefile
 └── README / AGENTS / CONTRIBUTING / CHANGELOG / LICENSE
@@ -165,3 +168,4 @@ go vet ./... && go test ./... && go build ./...
 ```
 
 Branching: `main` = releases, `develop` = integration, `feat/*` for work. See [CONTRIBUTING.md](CONTRIBUTING.md).
+

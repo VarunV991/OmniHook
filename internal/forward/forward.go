@@ -16,7 +16,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/you/omnihook/internal/outbound"
-	"github.com/you/omnihook/internal/replay"
 )
 
 // Timeout for a single forward attempt (shorter than provider retry windows).
@@ -25,7 +24,7 @@ const timeout = 10 * time.Second
 // Deliver POSTs the stored request (method, headers, raw body) to target and
 // records status/latency into `replays`. Safe to call in a goroutine.
 func Deliver(db *sql.DB, requestID, target string) (statusCode int, latencyMs int64, errMsg string) {
-	if replay.Blocked(target) {
+	if outbound.Blocked(target) {
 		errMsg = "blocked: SSRF guard (metadata host)"
 		record(db, requestID, target, 0, 0, errMsg)
 		return 0, 0, errMsg
