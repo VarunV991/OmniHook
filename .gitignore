@@ -5,7 +5,8 @@ data/
 *.db-shm
 dist/
 .env
-# Local-only build plan (unpublished, kept on disk)
+# Local-only docs (unpublished, kept on disk)
 PLAN.md
 docs/LAUNCH.md
+docs/completion-status.md
 OMNIHOOK_REVIEW.md

@@ -298,6 +298,7 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	times := fs.Int("times", 1, "repeat replay N times (max 50)")
 	delayMs := fs.Int("delay-ms", 0, "delay between repeats in ms")
 	resign := fs.Bool("resign", false, "refresh time-sensitive signatures with endpoint secret so old captures verify PASS")
+	failHTTP := fs.Bool("fail-on-http-error", false, "return an error when any replay receives HTTP status 400 or higher")
 	var headers multiFlag
 	fs.Var(&headers, "header", "override/add header K=V (repeatable)")
 	pos, ok := parseMixed(fs, args)
@@ -336,7 +337,7 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	if *times == 1 && !*resign {
 		code, lat, resp := replay.Send(db, pos[0], *target, overrides, bodyOverride)
 		fmt.Fprintf(stdout, "status=%d latency_ms=%d\n%s\n", code, lat, truncate(resp, 2000))
-		if code == 0 {
+		if code == 0 || (*failHTTP && code >= 400) {
 			return ExitError
 		}
 		return ExitOK
@@ -348,9 +349,9 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 		if i > 0 && *delayMs > 0 {
 			time.Sleep(time.Duration(*delayMs) * time.Millisecond)
 		}
-		c, l, _ := replay.SendWithOptions(db, pos[0], *target, opts)
-		fmt.Fprintf(stdout, "[%d/%d] status=%d latency_ms=%d\n", i+1, *times, c, l)
-		if c == 0 {
+		c, l, resp := replay.SendWithOptions(db, pos[0], *target, opts)
+		fmt.Fprintf(stdout, "[%d/%d] status=%d latency_ms=%d\n%s\n", i+1, *times, c, l, truncate(resp, 2000))
+		if c == 0 || (*failHTTP && c >= 400) {
 			failed = true
 		}
 	}

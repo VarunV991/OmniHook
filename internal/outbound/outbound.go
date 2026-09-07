@@ -4,10 +4,39 @@
 package outbound
 
 import (
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
+
+var blockedHosts = map[string]bool{
+	"169.254.169.254":          true,
+	"metadata.google.internal": true,
+	"metadata.google":          true,
+	"instance-data":            true,
+}
+
+// Blocked reports whether target is barred by the outbound SSRF policy.
+// Localhost and private development destinations remain allowed by design.
+// IPv4-mapped IPv6 addresses are normalized before checking metadata ranges.
+func Blocked(target string) bool {
+	u, err := url.Parse(target)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return true
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if blockedHosts[host] {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil && v4[0] == 169 && v4[1] == 254 {
+			return true
+		}
+	}
+	return false
+}
 
 // Client returns an HTTP client that never silently follows redirects:
 // 3xx responses are returned to the caller (and recorded) instead of turning

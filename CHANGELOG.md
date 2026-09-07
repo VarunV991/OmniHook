@@ -6,6 +6,22 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 ## [Unreleased] (develop)
 
 Added:
+- Adopted validation-tree advances: embedded versioned migrations (single
+  schema source, legacy upgrade path, 0600 data files), cursor-correct
+  pagination (limit+1 with cursor only when more rows exist), layman docs
+  (architecture/flow/why/storage), review-claim corrections.
+- D sustainability: API keyset pagination and aggregated inbox, filtered SSE
+  notifications with reconnect reconciliation and drop accounting; accessible
+  UI controls, visible errors, responsive layout and pending-state handling.
+- Database: embedded versioned transactional migrations, legacy upgrade
+  fixtures, initialization cleanup and restrictive file permissions.
+- CLI: opt-in `replay --fail-on-http-error` for application HTTP failures.
+- CI and tooling: stricter checkdocs history/area checks, documentation tests,
+  race and vulnerability jobs, packaged-UI and Docker smoke coverage.
+- Outbound/replay/forward security: shared metadata guard normalizes mapped
+  IPv6 addresses; redirects remain unfollowed. DNS rebinding is deferred.
+- Docs: architecture, flow, rationale and storage guides; corrected generic
+  verification, framework-hint and source-file claims (review #33).
 - C fidelity: Stripe multi-signature accept-any; provider enum validation +
   `auto`; effective provider persisted (`verified_by`, migration 002) and used
   for re-sign, with explicit re-sign errors; canonical GC timestamps + boundary
@@ -82,3 +98,4 @@ Added:
 - Packaging: multi-stage Dockerfile (distroless nonroot), `docker-compose.yml`, GoReleaser matrix, Makefile.
 - Tests: verifier golden vectors (incl. raw-vs-pretty JSON mismatch), SSRF blocklist, hermetic API loop test (create→capture→list→detail→replay), `go vet` clean.
 - Docs: `PLAN.md` (requirements/scope/phases/test/launch), README quickstart, `AGENTS.md`.
+

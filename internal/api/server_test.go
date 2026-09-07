@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -63,6 +64,12 @@ func TestHealth(t *testing.T) {
 	}
 }
 
+// pageShape mirrors the paginated list envelope.
+type pageShape struct {
+	Requests   []map[string]string `json:"requests"`
+	NextCursor string              `json:"next_cursor"`
+}
+
 func TestCaptureListReplayLoop(t *testing.T) {
 	s := newTestServer(t)
 
@@ -89,13 +96,17 @@ func TestCaptureListReplayLoop(t *testing.T) {
 	req = httptest.NewRequest("GET", "/api/endpoints/proj1/requests", nil)
 	rec = httptest.NewRecorder()
 	s.Mux.ServeHTTP(rec, req)
-	var list []map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+	var page pageShape
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Requests) != 1 {
 		t.Fatalf("list = %q, err = %v", rec.Body.String(), err)
 	}
-	id := list[0]["id"]
-	if list[0]["verify_status"] != "SKIPPED" {
-		t.Fatalf("verify_status = %q", list[0]["verify_status"])
+	// Single row, nothing after: no next cursor.
+	if page.NextCursor != "" {
+		t.Fatalf("unexpected next cursor: %q", page.NextCursor)
+	}
+	id := page.Requests[0]["id"]
+	if page.Requests[0]["verify_status"] != "SKIPPED" {
+		t.Fatalf("verify_status = %q", page.Requests[0]["verify_status"])
 	}
 
 	// 4. Detail preserves byte-identical body.
@@ -569,8 +580,151 @@ func TestCaptureWithBrokenForwardStill200(t *testing.T) {
 	req = httptest.NewRequest("GET", "/api/endpoints/fwd1/requests", nil)
 	rec = httptest.NewRecorder()
 	s.Mux.ServeHTTP(rec, req)
-	var list []map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+	var fwd pageShape
+	if err := json.Unmarshal(rec.Body.Bytes(), &fwd); err != nil || len(fwd.Requests) != 1 {
 		t.Fatalf("list = %q, err = %v", rec.Body.String(), err)
+	}
+}
+
+// #25: cursor pagination walks >50 rows exactly once; aggregated inbox serves
+// all endpoints in one call; bad cursors/limits are 400s.
+func TestPaginationAndAggregatedInbox(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "pg"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d", rec.Code)
+	}
+	for i := 0; i < 5; i++ {
+		id := "pg-" + string(rune('a'+i))
+		at := "2026-09-06T10:00:0" + string(rune('0'+i)) + ".000Z"
+		if _, err := s.DB.Exec(`INSERT INTO requests(id, endpoint_slug, method, received_at) VALUES(?,?, 'POST', ?)`, id, "pg", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Page 1 (limit 2): newest two, with cursor.
+	var p1 pageShape
+	rec = doAPI(t, s, "GET", "/api/endpoints/pg/requests?limit=2", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page1 = %d", rec.Code)
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &p1)
+	if len(p1.Requests) != 2 || p1.Requests[0]["id"] != "pg-e" || p1.NextCursor == "" {
+		t.Fatalf("page1 = %s", rec.Body.String())
+	}
+	// Page 2 + 3 walk the rest exactly once.
+	seen := map[string]bool{"pg-e": true}
+	// (page1 asserted above; re-derive second id from response)
+	seen[p1.Requests[1]["id"]] = true
+	cursor := p1.NextCursor
+	for {
+		rec = doAPI(t, s, "GET", "/api/endpoints/pg/requests?limit=2&cursor="+cursor, nil)
+		var p pageShape
+		_ = json.Unmarshal(rec.Body.Bytes(), &p)
+		for _, r := range p.Requests {
+			if seen[r["id"]] {
+				t.Fatalf("duplicate %q", r["id"])
+			}
+			seen[r["id"]] = true
+		}
+		if p.NextCursor == "" {
+			break
+		}
+		cursor = p.NextCursor
+	}
+	if len(seen) != 5 {
+		t.Fatalf("walked %d rows, want 5", len(seen))
+	}
+	// Aggregated inbox: one call, endpoint-tagged rows.
+	rec = doAPI(t, s, "GET", "/api/requests?limit=10", nil)
+	var agg struct {
+		Requests []map[string]string `json:"requests"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &agg)
+	if len(agg.Requests) != 5 || agg.Requests[0]["endpoint"] != "pg" {
+		t.Fatalf("agg = %s", rec.Body.String())
+	}
+	// Bad inputs.
+	for _, bad := range []string{
+		"/api/endpoints/pg/requests?limit=0",
+		"/api/endpoints/pg/requests?limit=101",
+		"/api/endpoints/pg/requests?cursor=bogus",
+		"/api/endpoints/pg/requests?cursor=a",
+	} {
+		if rec := doAPI(t, s, "GET", bad, nil); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s = %d, want 400", bad, rec.Code)
+		}
+	}
+}
+
+// #23: streams are per-endpoint, 404 unknown slugs, ready + heartbeat framing.
+func TestStreamFiltering(t *testing.T) {
+	s := newTestServer(t)
+	rec := doAPI(t, s, "POST", "/api/endpoints", map[string]string{"slug": "s1"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d", rec.Code)
+	}
+	// Unknown endpoint: 404.
+	req := httptest.NewRequest("GET", "/api/endpoints/nope/stream", nil)
+	got := httptest.NewRecorder()
+	s.Mux.ServeHTTP(got, req)
+	if got.Code != http.StatusNotFound {
+		t.Fatalf("unknown stream = %d", got.Code)
+	}
+	// Known endpoint: ready event arrives; other-endpoint traffic excluded.
+	req = httptest.NewRequest("GET", "/api/endpoints/s1/stream", nil)
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	got = httptest.NewRecorder()
+	flushed := make(chan string, 8)
+	go func() {
+		s.Mux.ServeHTTP(got, req)
+		close(flushed)
+	}()
+	deadline := time.After(5 * time.Second)
+	for {
+		if strings.Contains(got.Body.String(), "event: ready") {
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatal("no ready event")
+		default:
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	s.Cap.Hub.Broadcast("s1", "id-1")
+	s.Cap.Hub.Broadcast("s2", "id-2")
+	deadline = time.After(5 * time.Second)
+	for {
+		if strings.Contains(got.Body.String(), "data: id-1") {
+			break
+		}
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatalf("missing own event: %q", got.Body.String())
+		default:
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if strings.Contains(got.Body.String(), "id-2") {
+		cancel()
+		t.Fatalf("foreign event leaked: %q", got.Body.String())
+	}
+	cancel()
+	<-flushed
+}
+
+func TestEndpointDetailStorageFailureIsNot404(t *testing.T) {
+	s := newTestServer(t)
+	if err := s.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	s.Mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/endpoints/missing", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 }

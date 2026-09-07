@@ -73,31 +73,39 @@ func TestRateLimitDisabled(t *testing.T) {
 
 func TestHubFansOutToAllSubscribers(t *testing.T) {
 	hub := NewHub()
-	a, unsubA := hub.Subscribe()
+	a, unsubA := hub.Subscribe("")
 	defer unsubA()
-	b, unsubB := hub.Subscribe()
+	b, unsubB := hub.Subscribe("")
 	defer unsubB()
-	hub.Broadcast("id-1")
-	hub.Broadcast("id-2")
-	for _, ch := range []chan string{a, b} {
+	f, unsubF := hub.Subscribe("other")
+	defer unsubF()
+	hub.Broadcast("ep", "id-1")
+	hub.Broadcast("ep", "id-2")
+	for _, ch := range []chan Event{a, b} {
 		for _, want := range []string{"id-1", "id-2"} {
 			select {
 			case got := <-ch:
-				if got != want {
-					t.Fatalf("got %q want %q", got, want)
+				if got.ID != want || got.Endpoint != "ep" {
+					t.Fatalf("got %+v want %q", got, want)
 				}
 			default:
 				t.Fatal("subscriber missed broadcast")
 			}
 		}
 	}
+	// Filtered subscriber to another endpoint gets nothing.
+	select {
+	case got := <-f:
+		t.Fatalf("filtered got %+v", got)
+	default:
+	}
 	// Unsubscribed client receives nothing further.
 	unsubB()
-	hub.Broadcast("id-3")
+	hub.Broadcast("ep", "id-3")
 	select {
 	case got := <-a:
-		if got != "id-3" {
-			t.Fatalf("got %q", got)
+		if got.ID != "id-3" {
+			t.Fatalf("got %+v", got)
 		}
 	default:
 		t.Fatal("remaining subscriber missed broadcast")
@@ -106,7 +114,7 @@ func TestHubFansOutToAllSubscribers(t *testing.T) {
 	// closed, so concurrent Broadcast can never panic on send-to-closed).
 	select {
 	case got := <-b:
-		t.Fatalf("unsubscribed got %q", got)
+		t.Fatalf("unsubscribed got %+v", got)
 	default:
 	}
 }
@@ -134,5 +142,17 @@ func TestMarkedIncomingSkipsForward(t *testing.T) {
 	}
 	if n := count(t, h); n != 1 {
 		t.Fatalf("marked request not stored (%d)", n)
+	}
+}
+
+func TestHubDropAccounting(t *testing.T) {
+	h := NewHub()
+	_, unsub := h.Subscribe("ep")
+	defer unsub()
+	for i := 0; i < 17; i++ {
+		h.Broadcast("ep", "id")
+	}
+	if got := h.DropCount(); got != 1 {
+		t.Fatalf("drops = %d, want 1", got)
 	}
 }

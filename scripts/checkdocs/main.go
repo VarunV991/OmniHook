@@ -24,10 +24,13 @@ func main() {
 }
 
 func run() error {
-	changed := changedFiles()
+	changed, diffErr := changedFiles()
+	if diffErr != nil {
+		return fmt.Errorf("cannot determine changed files: %w", diffErr)
+	}
 	codeChanged := false
 	for _, f := range changed {
-		if strings.HasSuffix(f, ".go") || strings.HasPrefix(f, "web/") {
+		if strings.HasSuffix(f, ".go") || strings.HasPrefix(f, "web/") || strings.HasPrefix(f, "internal/webui/") {
 			if strings.HasPrefix(f, "scripts/checkdocs/") {
 				continue
 			}
@@ -54,18 +57,21 @@ func run() error {
 }
 
 // changedFiles lists paths changed vs main (CI/PR) or working tree (local).
-func changedFiles() []string {
+func changedFiles() ([]string, error) {
 	for _, args := range [][]string{
 		{"diff", "--name-only", "main...HEAD"},
 		{"diff", "--name-only", "origin/main...HEAD"},
 	} {
-		if out, err := exec.Command("git", args...).Output(); err == nil && len(out) > 0 {
-			return splitLines(string(out))
+		if out, err := exec.Command("git", args...).Output(); err == nil {
+			return splitLines(string(out)), nil
 		}
+	}
+	if os.Getenv("CI") == "true" {
+		return nil, fmt.Errorf("git base diff unavailable in CI")
 	}
 	out, err := exec.Command("git", "status", "--porcelain").Output()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var files []string
 	for _, line := range splitLines(string(out)) {
@@ -73,7 +79,7 @@ func changedFiles() []string {
 			files = append(files, strings.TrimSpace(line[3:]))
 		}
 	}
-	return files
+	return files, nil
 }
 
 func splitLines(s string) []string {
@@ -144,38 +150,25 @@ var wsRe = regexp.MustCompile(`\s+`)
 // identical twin in the inline schema const in internal/db/db.go (kept inline
 // because go:embed cannot reference ../../ paths). Prevents silent drift.
 func checkSchemaSync() error {
-	mig, err := os.ReadFile("migrations/001_init.sql")
+	b, err := os.ReadFile("migrations/embed.go")
 	if err != nil {
 		return err
 	}
-	dbsrc, err := os.ReadFile("internal/db/db.go")
+	if !strings.Contains(string(b), "go:embed *.sql") {
+		return fmt.Errorf("migrations/embed.go must embed numbered SQL migrations")
+	}
+	entries, err := os.ReadDir("migrations")
 	if err != nil {
 		return err
 	}
-	norm := func(s string) string {
-		// Strip -- comments FIRST (they may contain semicolons), then split.
-		var code []string
-		for _, l := range strings.Split(s, "\n") {
-			if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "--") {
-				code = append(code, t)
-			}
+	count := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sql") {
+			count++
 		}
-		var stmts []string
-		for _, part := range strings.Split(strings.Join(code, "\n"), ";") {
-			if t := wsRe.ReplaceAllString(strings.ToLower(strings.TrimSpace(part)), " "); t != "" {
-				stmts = append(stmts, t)
-			}
-		}
-		return strings.Join(stmts, ";\n")
 	}
-	want, got := norm(string(mig)), norm(string(dbsrc))
-	for _, stmt := range strings.Split(want, ";\n") {
-		if stmt == "" {
-			continue
-		}
-		if !strings.Contains(got, stmt) {
-			return fmt.Errorf("migrations/001_init.sql statement missing from internal/db/db.go inline schema: %.80q...", stmt)
-		}
+	if count == 0 {
+		return fmt.Errorf("migrations directory has no SQL migrations")
 	}
 	return nil
 }

@@ -58,3 +58,34 @@ func TestStripHopByHop(t *testing.T) {
 		}
 	}
 }
+
+func TestBlockedMetadataAddressForms(t *testing.T) {
+	for _, target := range []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://[::ffff:169.254.169.254]/latest/meta-data/",
+		"http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+		"http://metadata.google.internal/",
+	} {
+		if !Blocked(target) {
+			t.Fatalf("expected blocked: %s", target)
+		}
+	}
+	for _, target := range []string{
+		"http://localhost:3000/hook/test",
+		"http://127.0.0.1:3000/hook/test",
+		"http://10.0.0.5:3000/hook/test",
+		"https://example.test/hook/test",
+	} {
+		if Blocked(target) {
+			t.Fatalf("unexpectedly blocked allowed target: %s", target)
+		}
+	}
+}
+
+func TestBlockedRejectsUnsupportedTargets(t *testing.T) {
+	for _, target := range []string{"file:///etc/passwd", "//localhost/path", "not a url"} {
+		if !Blocked(target) {
+			t.Fatalf("expected rejected target: %s", target)
+		}
+	}
+}

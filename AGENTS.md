@@ -6,7 +6,7 @@ Read this first. It saves you from the traps already discovered here.
 
 OmniHook: local-first universal webhook inbox. Single Go binary + SQLite (WAL) + embedded
 single-page UI. Captures `ALL /hook/:slug/*` preserving **raw bytes**, verifies HMAC
-signatures (Stripe, GitHub, Standard Webhooks, Razorpay, Generic), serves a live SSE inbox,
+signatures (Stripe, GitHub, Standard Webhooks, Razorpay, Shopify), serves a live SSE inbox,
 and replays exact bytes to localhost. MIT. Full spec: `README.md` + `docs/PROVIDERS.md`.
 
 ## 2. Branching (strict develop → main)
@@ -75,16 +75,16 @@ These apply on every OS unless marked. When in doubt, prefer hermetic
 ## 5. Code conventions
 
 - `gofmt` clean, `go vet` clean. No ORM — `database/sql` + numbered SQL files in
-  `migrations/` (source of truth). `internal/db/db.go` mirrors the schema inline because
-  `go:embed` cannot reference `../../` paths — keep both in sync when changing tables.
+  `migrations/` (embedded source of truth). Add a numbered transactional upgrade and
+  legacy-schema fixture coverage; never maintain a second inline schema.
 - UI assets live in `internal/webui/` (`index.html`, `login.html`) and are
   `go:embed`-ded into the binary — the package exists precisely because embed
   cannot reference `../../` paths. Use `WEB_DIR=<repo>/internal/webui` for
   live UI iteration; never add a disk-only asset path.
 - Verifiers (`internal/verify/`) operate on **raw body bytes**; verification must be
   constant-time (`secureEqual`). Every verifier needs golden PASS + tampered/expired
-  negative tests. Every `FAIL` must include a `FixHint` with copy-paste snippets for
-  Express / Spring Boot / FastAPI / Django.
+  negative tests. Failure guidance must match the error (secret, header, clock, or body).
+  Do not promise framework snippets for every error; raw-body examples apply to body mismatches.
 - Capture handler must **never** fail the provider response because forwarding failed
   (forward is async/fire-and-forget). Respect `MAX_BODY_BYTES` before reading.
 - Replay: SSRF blocklist (`internal/replay/blocked`) must keep blocking cloud metadata
@@ -106,3 +106,4 @@ These apply on every OS unless marked. When in doubt, prefer hermetic
 3. `gh pr create --base main --head develop`, `gh pr merge`, fetch, fast-forward local `main`,
    `git tag -a vX.Y.Z`, `git push origin main --tags`, `gh release create`.
 4. `git checkout develop` when done — leave the tree on `develop`.
+
