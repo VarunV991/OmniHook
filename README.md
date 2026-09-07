@@ -79,6 +79,12 @@ bounded pool (8 workers, 128 queue); drops and self-target loops are recorded,
 not silent. Marked requests (already forwarded/replayed by OmniHook) are
 captured but never re-forwarded.
 
+Outbound safety: every replay/forward goes through one policy — metadata
+addresses blocked (AWS/GCP/Alibaba ranges incl. IPv4-mapped IPv6 and DNS
+aliases, re-validated per connection), redirects never followed, hop-by-hop
+headers stripped, timeouts enforced. Localhost and private dev targets stay
+allowed. Corporate proxies are honored; URL-level blocking always applies.
+
 ```bash
 curl -s -X POST localhost:8080/api/endpoints -H 'Content-Type: application/json' \
   -d '{"slug":"proj1","provider":"stripe","target_url":"http://localhost:3000/webhooks/stripe"}'

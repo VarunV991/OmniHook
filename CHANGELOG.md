@@ -10,6 +10,10 @@ Added:
   schema source, legacy upgrade path, 0600 data files), cursor-correct
   pagination (limit+1 with cursor only when more rows exist), layman docs
   (architecture/flow/why/storage), review-claim corrections.
+- Outbound hardening (review #03): resolved-address metadata validation at
+  dial time (mapped IPv6, Alibaba range, DNS aliases, rebinding re-checked),
+  shared policy transport for replay + forward, proxy-aware with URL-level
+  blocking always on.
 - D sustainability: API keyset pagination and aggregated inbox, filtered SSE
   notifications with reconnect reconciliation and drop accounting; accessible
   UI controls, visible errors, responsive layout and pending-state handling.
