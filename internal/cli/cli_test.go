@@ -133,6 +133,28 @@ func TestNewRejectsBadSlug(t *testing.T) {
 	}
 }
 
+func TestNewExplicitFieldsAndEnum(t *testing.T) {
+	sqldb, cfg := testSetup(t)
+	var out, errBuf bytes.Buffer
+	if code := Run(sqldb, cfg, []string{"new", "bad", "--provider", "strip"}, &out, &errBuf); code != ExitError {
+		t.Fatalf("exit=%d, want error for unknown provider", code)
+	}
+	runOK(t, sqldb, cfg, "new", "ex1", "--provider", "stripe", "--secret", "whsec_keep")
+	// Re-run with slug only: must not destroy stored secret.
+	runOK(t, sqldb, cfg, "new", "ex1")
+	var provider, secret string
+	_ = sqldb.QueryRow(`SELECT provider, secret_ref FROM endpoints WHERE slug='ex1'`).Scan(&provider, &secret)
+	if provider != "stripe" || secret != "whsec_keep" {
+		t.Fatalf("re-new destroyed config: %q %q", provider, secret)
+	}
+	// Explicit empty clears.
+	runOK(t, sqldb, cfg, "new", "ex1", "--secret", "")
+	_ = sqldb.QueryRow(`SELECT secret_ref FROM endpoints WHERE slug='ex1'`).Scan(&secret)
+	if secret != "" {
+		t.Fatalf("explicit empty did not clear: %q", secret)
+	}
+}
+
 func TestListJSONShape(t *testing.T) {
 	sqldb, cfg := testSetup(t)
 	runOK(t, sqldb, cfg, "new", "j1", "--provider", "github")
@@ -211,5 +233,36 @@ func TestReplayTimesAndResign(t *testing.T) {
 	}
 	if lastSig == "" || lastSig == "t=100,v1=deadbeef" {
 		t.Fatalf("not resigned: %q", lastSig)
+	}
+}
+
+func TestReplayFailOnHTTPErrorPolicy(t *testing.T) {
+	dbx, cfg := testSetup(t)
+	runOK(t, dbx, cfg, "new", "policy")
+	if _, err := dbx.Exec("INSERT INTO requests(id,endpoint_slug,method,body,body_size) VALUES('policy-req','policy','POST',?,1)", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n%2 == 1 {
+			w.WriteHeader(500)
+		} else {
+			w.WriteHeader(200)
+		}
+	}))
+	defer target.Close()
+	var out, errs bytes.Buffer
+	if code := Run(dbx, cfg, []string{"replay", "policy-req", "--target", target.URL, "--times", "2"}, &out, &errs); code != ExitOK {
+		t.Fatalf("default exit=%d stderr=%s", code, errs.String())
+	}
+	n = 0
+	out.Reset()
+	errs.Reset()
+	if code := Run(dbx, cfg, []string{"replay", "policy-req", "--target", target.URL, "--times", "2", "--fail-on-http-error"}, &out, &errs); code != ExitError {
+		t.Fatalf("strict exit=%d stderr=%s", code, errs.String())
+	}
+	if !strings.Contains(out.String(), "status=500") {
+		t.Fatalf("output=%q", out.String())
 	}
 }

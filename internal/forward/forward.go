@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/you/omnihook/internal/replay"
+	"github.com/you/omnihook/internal/outbound"
 )
 
 // Timeout for a single forward attempt (shorter than provider retry windows).
@@ -24,7 +24,7 @@ const timeout = 10 * time.Second
 // Deliver POSTs the stored request (method, headers, raw body) to target and
 // records status/latency into `replays`. Safe to call in a goroutine.
 func Deliver(db *sql.DB, requestID, target string) (statusCode int, latencyMs int64, errMsg string) {
-	if replay.Blocked(target) {
+	if outbound.Blocked(target) {
 		errMsg = "blocked: SSRF guard (metadata host)"
 		record(db, requestID, target, 0, 0, errMsg)
 		return 0, 0, errMsg
@@ -36,7 +36,7 @@ func Deliver(db *sql.DB, requestID, target string) (statusCode int, latencyMs in
 		// No record: request_id would violate the replays FK; nothing to audit.
 		return 0, 0, "request not found: " + requestID
 	}
-	client := &http.Client{Timeout: timeout}
+	client := outbound.Client(timeout)
 	req, err := http.NewRequest(method, target, bytes.NewReader(body))
 	if err != nil {
 		errMsg = err.Error()
@@ -62,6 +62,7 @@ func Deliver(db *sql.DB, requestID, target string) (statusCode int, latencyMs in
 	}
 	req.Header.Set("X-Omnihook-Forward", "true")
 	req.Header.Set("X-Omnihook-Request-Id", requestID)
+	outbound.StripHopByHop(req.Header)
 	start := time.Now()
 	resp, err := client.Do(req)
 	latencyMs = time.Since(start).Milliseconds()

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>OmniHook — sign in</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#0b0f14;color:#e6edf3;display:flex;align-items:center;justify-content:center;min-height:100vh}
+form{background:#111a26;padding:24px;border-radius:12px;min-width:300px}
+input{width:100%;padding:8px;margin:8px 0;border-radius:6px;border:1px solid #333;background:#0f1520;color:#e6edf3;box-sizing:border-box}
+button{background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:8px 12px;cursor:pointer;width:100%}
+.err{color:#f0883e;min-height:1.2em}
+</style>
+</head>
+<body>
+<form id="f">
+<h3>OmniHook</h3>
+<p>This inbox is protected. Enter the <code>ACCESS_TOKEN</code>:</p>
+<div class="err" id="e"></div>
+<input id="t" type="password" autocomplete="current-password" placeholder="access token"/>
+<button type="submit">Sign in</button>
+</form>
+<script>
+document.getElementById('f').onsubmit=async(ev)=>{
+  ev.preventDefault();
+  const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:document.getElementById('t').value})});
+  if(r.ok){location.href='/';}else{document.getElementById('e').textContent='Invalid token.';}
+};
+</script>
+</body>
+</html>

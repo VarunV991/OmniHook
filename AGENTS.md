@@ -6,8 +6,8 @@ Read this first. It saves you from the traps already discovered here.
 
 OmniHook: local-first universal webhook inbox. Single Go binary + SQLite (WAL) + embedded
 single-page UI. Captures `ALL /hook/:slug/*` preserving **raw bytes**, verifies HMAC
-signatures (Stripe, GitHub, Standard Webhooks, Razorpay, Generic), serves a live SSE inbox,
-and replays exact bytes to localhost. MIT. Full spec: `PLAN.md`.
+signatures (Stripe, GitHub, Standard Webhooks, Razorpay, Shopify), serves a live SSE inbox,
+and replays exact bytes to localhost. MIT. Full spec: `README.md` + `docs/PROVIDERS.md`.
 
 ## 2. Branching (strict develop → main)
 
@@ -28,9 +28,13 @@ go run ./cmd/omnihook up                  # foreground only (see §4)
 - Toolchain: Go 1.22, module `github.com/you/omnihook` (rename when repo namespace is final).
 - DB driver: `modernc.org/sqlite` (pure Go, no CGO). First `go mod tidy`/build downloads
   heavily — allow 300s timeouts.
-- Never use `Select-Object -First` to truncate tool output; full output is captured to a file.
 
 ## 4. Sandbox gotchas (learned the hard way)
+
+These apply on every OS unless marked. When in doubt, prefer hermetic
+`httptest` coverage (§4c.1) over shell-driven servers.
+
+### 4a. Windows (PowerShell 5.1)
 
 1. **Background processes do not survive a tool call.** The harness kills lingering child
    processes (`ChildProcess.kill`). `Start-Job` and detached `Start-Process` servers die
@@ -40,25 +44,47 @@ go run ./cmd/omnihook up                  # foreground only (see §4)
    `StartInfo.EnvironmentVariables` **before** `Start()`), poll `/health`, exercise the
    API, then `Kill()` in a `finally` block. `Start-Process` cmdlet is broken here —
    do not use it.
-3. **Env must precede process start.** `$env:PORT=...` set after `Start-Process` does
+3. **Env must precede process start.** `$env:PORT=...` set after launch does
    nothing to the child. Always use a fresh port per run (e.g. `18081`) and a temp
    data dir (`Join-Path $env:TEMP "omnihook-smoke"`).
-4. **Prefer hermetic tests.** `internal/api/server_test.go` runs the full
+4. **Build with `.exe` suffix** (`go build -o bin\omnihook.exe ...`): the shell
+   cannot execute or pipe extensionless binaries (`CantActivateDocumentInPipeline`).
+5. **No `grep`/`&&`:** this shell has neither; use the `grep` tool and
+   `; if ($?) { ... }` chaining. Quote with single quotes; avoid `\"` escapes —
+   prefer string concatenation over interpolation when nesting quotes.
+
+### 4b. Linux / macOS (bash)
+
+1. Same single-call rule: start the server, poll `/health`, exercise, `kill` —
+   all in one tool call. Prefer `./bin/omnihook & SRV=$!; ...; kill $SRV`, but
+   be aware the harness may reap children when the call ends, so keep the whole
+   loop inside the call and `kill` explicitly (trap on EXIT helps).
+2. Env via `export PORT=... DATA_DIR=$(mktemp -d)` before launch; fresh port per run.
+3. Binary has no extension (`go build -o bin/omnihook ...`); `grep`, `&&`, and
+   double-quote interpolation all work normally.
+
+### 4c. All shells
+
+1. **Prefer hermetic tests.** `internal/api/server_test.go` runs the full
    create→capture→list→detail→replay loop in-process via `httptest` — no ports, no
    processes. Add regression coverage there, not in shell scripts.
-5. File writes: use `read` before `edit`/`write`; keep `oldString` boundaries minimal.
+2. File writes: use `read` before `edit`/`write`; keep `oldString` boundaries minimal.
+3. Never use output truncation to limit tool results; full output is captured to
+   a file — search it instead (`Select-Object -First` on Windows, `head` on bash).
 
 ## 5. Code conventions
 
 - `gofmt` clean, `go vet` clean. No ORM — `database/sql` + numbered SQL files in
-  `migrations/` (source of truth). `internal/db/db.go` mirrors the schema inline because
-  `go:embed` cannot reference `../../` paths — keep both in sync when changing tables.
-- Same `go:embed` restriction applies to `web/index.html`: it is served from disk with a
-  placeholder fallback (`internal/api/indexHTML()`), not embedded.
+  `migrations/` (embedded source of truth). Add a numbered transactional upgrade and
+  legacy-schema fixture coverage; never maintain a second inline schema.
+- UI assets live in `internal/webui/` (`index.html`, `login.html`) and are
+  `go:embed`-ded into the binary — the package exists precisely because embed
+  cannot reference `../../` paths. Use `WEB_DIR=<repo>/internal/webui` for
+  live UI iteration; never add a disk-only asset path.
 - Verifiers (`internal/verify/`) operate on **raw body bytes**; verification must be
   constant-time (`secureEqual`). Every verifier needs golden PASS + tampered/expired
-  negative tests. Every `FAIL` must include a `FixHint` with copy-paste snippets for
-  Express / Spring Boot / FastAPI / Django.
+  negative tests. Failure guidance must match the error (secret, header, clock, or body).
+  Do not promise framework snippets for every error; raw-body examples apply to body mismatches.
 - Capture handler must **never** fail the provider response because forwarding failed
   (forward is async/fire-and-forget). Respect `MAX_BODY_BYTES` before reading.
 - Replay: SSRF blocklist (`internal/replay/blocked`) must keep blocking cloud metadata
@@ -68,9 +94,10 @@ go run ./cmd/omnihook up                  # foreground only (see §4)
 
 ## 6. Docs to keep in sync with every feature PR
 
-- `PLAN.md` §2 scope table (move Deferred → P0 when scoped).
 - `CHANGELOG.md` Unreleased section.
-- `README.md` config table / quickstart if flags or endpoints change.
+- `README.md` config table / quickstart / layout if flags, endpoints, env vars, or packages change.
+- Scope tracking lives in GitHub issues (labels + milestone), not a plan doc.
+- `docs/` guides (`PROVIDERS.md`, `MANUAL-TEST.md`, `LAUNCH.md`) when behavior they describe changes.
 
 ## 7. Release checklist (maintainer only, on `develop` when green)
 
@@ -79,3 +106,4 @@ go run ./cmd/omnihook up                  # foreground only (see §4)
 3. `gh pr create --base main --head develop`, `gh pr merge`, fetch, fast-forward local `main`,
    `git tag -a vX.Y.Z`, `git push origin main --tags`, `gh release create`.
 4. `git checkout develop` when done — leave the tree on `develop`.
+

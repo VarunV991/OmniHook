@@ -7,6 +7,7 @@ package cli
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/you/omnihook/internal/api"
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/gc"
 	"github.com/you/omnihook/internal/replay"
+	slugcheck "github.com/you/omnihook/internal/slug"
 	"github.com/you/omnihook/internal/verify"
 )
 
@@ -123,9 +124,11 @@ func needDB(db *sql.DB, stderr io.Writer) bool {
 func cmdNew(db *sql.DB, cfg config.Config, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("new", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	provider := fs.String("provider", "generic", "provider: stripe|github|standard|razorpay|shopify|generic")
-	secret := fs.String("secret", "", "webhook signing secret")
-	target := fs.String("target", "", "forward target URL (e.g. http://localhost:3000/hook)")
+	var provider, secret, target setString
+	provider.val = "generic"
+	fs.Var(&provider, "provider", "provider: stripe|github|standard|razorpay|shopify|generic|auto")
+	fs.Var(&secret, "secret", "webhook signing secret")
+	fs.Var(&target, "target", "forward target URL (e.g. http://localhost:3000/hook)")
 	pos, ok := parseMixed(fs, args)
 	if !ok {
 		return ExitError
@@ -138,21 +141,44 @@ func cmdNew(db *sql.DB, cfg config.Config, args []string, stdout, stderr io.Writ
 		return ExitError
 	}
 	slug := pos[0]
-	if !api.ValidSlug(slug) {
+	if !slugcheck.Valid(slug) {
 		fmt.Fprintln(stderr, "slug must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 		return ExitError
 	}
-	if _, err := db.Exec(`INSERT INTO endpoints(slug,name,provider,secret_ref,target_url) VALUES(?,?,?,?,?)
-		ON CONFLICT(slug) DO UPDATE SET provider=excluded.provider, secret_ref=excluded.secret_ref, target_url=excluded.target_url`,
-		slug, slug, *provider, *secret, *target); err != nil {
+	if !verify.ValidProvider(provider.val) {
+		fmt.Fprintln(stderr, "unknown provider (want stripe|github|standard|razorpay|shopify|generic|auto)")
+		return ExitError
+	}
+	// Create never destroys: insert defaults, then update ONLY explicitly
+	// supplied fields (review #27 — re-running `new slug` alone is a no-op).
+	if _, err := db.Exec(`INSERT OR IGNORE INTO endpoints(slug,name,provider) VALUES(?,?,?)`,
+		slug, slug, provider.val); err != nil {
 		fmt.Fprintf(stderr, "create endpoint: %v\n", err)
 		return ExitError
+	}
+	if provider.set {
+		if _, err := db.Exec(`UPDATE endpoints SET provider=? WHERE slug=?`, provider.val, slug); err != nil {
+			fmt.Fprintf(stderr, "update provider: %v\n", err)
+			return ExitError
+		}
+	}
+	if secret.set {
+		if _, err := db.Exec(`UPDATE endpoints SET secret_ref=? WHERE slug=?`, secret.val, slug); err != nil {
+			fmt.Fprintf(stderr, "update secret: %v\n", err)
+			return ExitError
+		}
+	}
+	if target.set {
+		if _, err := db.Exec(`UPDATE endpoints SET target_url=? WHERE slug=?`, target.val, slug); err != nil {
+			fmt.Fprintf(stderr, "update target: %v\n", err)
+			return ExitError
+		}
 	}
 	base := cfg.PublicURL
 	if base == "" {
 		base = "http://localhost:" + cfg.Port
 	}
-	fmt.Fprintf(stdout, "endpoint %q provider=%s\ncapture_url: %s/hook/%s\n", slug, *provider, base, slug)
+	fmt.Fprintf(stdout, "endpoint %q provider=%s\ncapture_url: %s/hook/%s\n", slug, provider.val, base, slug)
 	return ExitOK
 }
 
@@ -206,6 +232,7 @@ func cmdShow(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "full JSON output")
+	rawPath := fs.String("raw", "", "write exact body bytes to file (byte-identical, unlike body_text)")
 	pos, ok := parseMixed(fs, args)
 	if !ok {
 		return ExitError
@@ -214,7 +241,7 @@ func cmdShow(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 		return ExitError
 	}
 	if len(pos) < 1 {
-		fmt.Fprintln(stderr, "usage: omnihook show <request-id>")
+		fmt.Fprintln(stderr, "usage: omnihook show <request-id> [--json] [--raw out.bin]")
 		return ExitError
 	}
 	var method, path, query, headers, ctype, vs, verr, hint, at, slug string
@@ -234,8 +261,17 @@ func cmdShow(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 			"query": query, "headers": json.RawMessage(headers), "content_type": ctype,
 			"verify_status": vs, "verify_error": verr, "fix_hint": hint,
 			"received_at": at, "body_size": size, "truncated": truncated,
-			"body_text": string(body),
+			"body_text":   string(body),
+			"body_base64": base64.StdEncoding.EncodeToString(body),
 		})
+		return ExitOK
+	}
+	if *rawPath != "" {
+		if err := os.WriteFile(*rawPath, body, 0o600); err != nil {
+			fmt.Fprintf(stderr, "raw: %v\n", err)
+			return ExitError
+		}
+		fmt.Fprintf(stdout, "wrote %d bytes to %s\n", len(body), *rawPath)
 		return ExitOK
 	}
 	where := path
@@ -262,6 +298,7 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	times := fs.Int("times", 1, "repeat replay N times (max 50)")
 	delayMs := fs.Int("delay-ms", 0, "delay between repeats in ms")
 	resign := fs.Bool("resign", false, "refresh time-sensitive signatures with endpoint secret so old captures verify PASS")
+	failHTTP := fs.Bool("fail-on-http-error", false, "return an error when any replay receives HTTP status 400 or higher")
 	var headers multiFlag
 	fs.Var(&headers, "header", "override/add header K=V (repeatable)")
 	pos, ok := parseMixed(fs, args)
@@ -300,7 +337,7 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 	if *times == 1 && !*resign {
 		code, lat, resp := replay.Send(db, pos[0], *target, overrides, bodyOverride)
 		fmt.Fprintf(stdout, "status=%d latency_ms=%d\n%s\n", code, lat, truncate(resp, 2000))
-		if code == 0 {
+		if code == 0 || (*failHTTP && code >= 400) {
 			return ExitError
 		}
 		return ExitOK
@@ -312,9 +349,9 @@ func cmdReplay(db *sql.DB, args []string, stdout, stderr io.Writer) int {
 		if i > 0 && *delayMs > 0 {
 			time.Sleep(time.Duration(*delayMs) * time.Millisecond)
 		}
-		c, l, _ := replay.SendWithOptions(db, pos[0], *target, opts)
-		fmt.Fprintf(stdout, "[%d/%d] status=%d latency_ms=%d\n", i+1, *times, c, l)
-		if c == 0 {
+		c, l, resp := replay.SendWithOptions(db, pos[0], *target, opts)
+		fmt.Fprintf(stdout, "[%d/%d] status=%d latency_ms=%d\n%s\n", i+1, *times, c, l, truncate(resp, 2000))
+		if c == 0 || (*failHTTP && c >= 400) {
 			failed = true
 		}
 	}
@@ -390,6 +427,16 @@ type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
+
+// setString is a string flag that records whether it was explicitly supplied,
+// so create-or-update flows only touch given fields (review #27).
+type setString struct {
+	val string
+	set bool
+}
+
+func (s *setString) String() string     { return s.val }
+func (s *setString) Set(v string) error { s.val, s.set = v, true; return nil }
 
 func readFileOrStdin(spec string) ([]byte, error) {
 	p := strings.TrimPrefix(spec, "@")

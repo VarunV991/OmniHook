@@ -2,12 +2,12 @@
 
 How to point each provider at OmniHook, what PASS looks like, and what to do
 when it says FAIL. All signature schemes verified by `TestProviderMatrix`
-(21 cases) plus a live end-to-end run against the shipped binary on 2026-09-06
-(see Results §6).
+plus the historical simulated end-to-end run on 2026-09-06
+(see Test results below). These are local signature fixtures, not evidence of live provider dashboard certification.
 
 Prerequisites for real (non-simulated) events: expose OmniHook publicly once —
 `cloudflared tunnel --url http://localhost:8080`, then
-`PUBLIC_URL=https://<you>.trycloudflare.com omnihook up`.
+`ACCESS_TOKEN=<choose-a-secret> PUBLIC_URL=https://<you>.trycloudflare.com omnihook up` (bash; set the same environment variables separately in PowerShell).
 
 ## 1. Stripe — `checkout.session.completed` and friends
 
@@ -29,6 +29,7 @@ Troubleshooting:
 - `timestamp outside 5-min tolerance` → clock skew (NTP) or replaying an old capture (expected — re-capture fresh).
 - CLI drill: save headers/body from `omnihook show <id> --json`, then `omnihook verify --provider stripe --secret whsec_... --headers @h.json --body @b.bin` (exit 0 PASS, 2 FAIL).
 - Old captures fail timestamp tolerance by design — replay with `--resign` (CLI), `resign:true` (API), or the UI checkbox to re-sign with the endpoint secret and verify PASS again.
+- Binary payloads: `body_text` is UTF-8 lossy. Use `GET /api/requests/<id>/body` (raw bytes), `body_base64` in detail JSON, or `omnihook show <id> --raw out.bin` for byte-identical export.
 
 ## 2. GitHub — `push`, `pull_request`, `workflow_run`
 
@@ -69,7 +70,7 @@ Connect: `omnihook new clerk1 --provider standard --secret whsec_YOURS`, paste t
 
 ## 7. Anything else — Generic HMAC
 
-No built-in verifier? The endpoint still captures everything (`SKIPPED`, never hard-failed). For HMAC современным: reuse the `generic` verifier pattern (`header + optional prefix + SHA256`) or open an issue with the provider's signing docs — new verifiers are ~30 lines + golden tests (see `internal/verify/razorpay.go`).
+Unknown traffic is captured and replayable. Both `generic` and `auto` select a supported verifier when its headers match; otherwise the result is `SKIPPED`. The Go `Generic` primitive exists in `internal/verify/chain.go`, but API/CLI endpoint settings do not currently expose its custom header/prefix. Do not expect arbitrary HMAC verification merely by choosing `generic`. Razorpay is also implemented in `internal/verify/chain.go`.
 
 ## 8. Test results
 
@@ -91,3 +92,4 @@ Live binary E2E (`bin/omnihook.exe`, server + CLI, real HMAC over HTTP):
 `new` → signed `POST /hook/stripe1` → `list` shows 1 request → inbox `VERIFY_STATUS: PASS` → `show` prints body → `verify` exit 0 → tampered body exit 2 with Express/Spring/FastAPI/Django fix hint → `replay` 200 in 20ms → `gc` 0 deleted → **E2E_PASS**.
 
 Reproduce anytime: `go test ./...` (unit) and the CLI loop above against `omnihook up --port <free>`.
+

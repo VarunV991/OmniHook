@@ -5,6 +5,55 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 
 ## [Unreleased] (develop)
 
+## [v0.3.0] - 2026-09-07
+
+Added:
+- Adopted validation-tree advances: embedded versioned migrations (single
+  schema source, legacy upgrade path, 0600 data files), cursor-correct
+  pagination (limit+1 with cursor only when more rows exist), layman docs
+  (architecture/flow/why/storage), review-claim corrections.
+- Outbound hardening (review #03): resolved-address metadata validation at
+  dial time (mapped IPv6, Alibaba range, DNS aliases, rebinding re-checked),
+  shared policy transport for replay + forward, proxy-aware with URL-level
+  blocking always on.
+- D sustainability: API keyset pagination and aggregated inbox, filtered SSE
+  notifications with reconnect reconciliation and drop accounting; accessible
+  UI controls, visible errors, responsive layout and pending-state handling.
+- Database: embedded versioned transactional migrations, legacy upgrade
+  fixtures, initialization cleanup and restrictive file permissions.
+- CLI: opt-in `replay --fail-on-http-error` for application HTTP failures.
+- CI and tooling: stricter checkdocs history/area checks, documentation tests,
+  race and vulnerability jobs, packaged-UI and Docker smoke coverage.
+- Outbound/replay/forward security: shared metadata guard normalizes mapped
+  IPv6 addresses; redirects remain unfollowed. DNS rebinding is deferred.
+- Docs: architecture, flow, rationale and storage guides; corrected generic
+  verification, framework-hint and source-file claims (review #33).
+- C fidelity: Stripe multi-signature accept-any; provider enum validation +
+  `auto`; effective provider persisted (`verified_by`, migration 002) and used
+  for re-sign, with explicit re-sign errors; canonical GC timestamps + boundary
+  tests; shared outbound policy (no redirect following, hop-by-hop stripping);
+  raw body export (API `/body`, `body_base64`, CLI `--raw`); replay 404/400
+  validation, 5-min batch deadline, empty-body overrides; explicit-fields-only
+  upsert (API + CLI); canonical header merge; oversized bodies 413-rejected.
+- B installable UI + setup UX: `internal/webui` embeds inbox + login pages in
+  the binary (plus `WEB_DIR` dev override); endpoint create form
+  (provider/secret/target), copyable capture URLs, replay target prefill,
+  verify reasons, delivery-attempt history API + UI panel; Docker data-volume
+  ownership, host connectivity docs, CI Compose smoke (health→create→capture).
+- A3 bounded delivery + shutdown: forward worker pool (8 workers, 128 queue;
+  drops recorded, never silent); self-target refusal + marked-request loop
+  breaker; http.Server timeouts with SIGINT/SIGTERM graceful shutdown
+  (drains forwards, stops GC, closes DB last).
+- A2 exposure lockdown: loopback bind by default (`BIND`, `--bind`), stderr
+  warning for untokened external binds; public `/login` shell + `/api/login`
+  HttpOnly cookie sessions + `/api/logout`; root serves login instead of 401.
+- A1 trust fixes: capture returns 503 (never phantom success) on storage
+  failure; 413 reject for oversized bodies (no truncated verify/forward);
+  400 on unreadable bodies and invalid slugs; bounded management JSON
+  (malformed/trailing rejected); PATCH status 200–599; startup config
+  validation; health 503 when DB down; generic 500s (no DB detail leaks);
+  shared `internal/slug` package.
+
 ## [v0.2.0] - 2026-09-06
 
 Added:
@@ -55,3 +104,4 @@ Added:
 - Packaging: multi-stage Dockerfile (distroless nonroot), `docker-compose.yml`, GoReleaser matrix, Makefile.
 - Tests: verifier golden vectors (incl. raw-vs-pretty JSON mismatch), SSRF blocklist, hermetic API loop test (create→capture→list→detail→replay), `go vet` clean.
 - Docs: `PLAN.md` (requirements/scope/phases/test/launch), README quickstart, `AGENTS.md`.
+

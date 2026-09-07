@@ -5,12 +5,59 @@ on:
   pull_request:
     branches: [main, develop]
 jobs:
-  build:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v5
+        with: {go-version: "1.22", cache: true}
+      - run: make verify
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v5
+        with: {go-version: "1.22", cache: true}
+      - run: go test -race ./...
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v5
+        with: {go-version: "1.22", cache: true}
+      - uses: golang/govulncheck-action@v1
+        with: {go-version-input: "1.22", go-package: "./..."}
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build
+      - run: |
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/health && break || sleep 2; done
+          curl -sf http://localhost:8080/health | grep -q '"db":"up"'
+          curl -sf -X POST http://localhost:8080/api/endpoints -H 'Authorization: Bearer changeme' -H 'Content-Type: application/json' -d '{"slug":"cismoke","provider":"generic","target_url":"http://echo:3000"}'
+          curl -sf -X POST http://localhost:8080/hook/cismoke -H 'Content-Type: application/json' -d '{"ci":true}'
+          curl -sf http://localhost:8080/ -H 'Authorization: Bearer changeme' | grep -q OmniHook
+          curl -sf http://localhost:8080/login | grep -q api/login
+          if curl -sf http://localhost:8080/api/endpoints; then exit 1; fi
+      - if: always()
+        run: docker compose down -v
+  packaged-ui:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
-          cache: true
-      - run: make verify
+        with: {go-version: "1.22", cache: true}
+      - run: |
+          go build -o omnihook ./cmd/omnihook
+          test -s omnihook
+          TMP="$(mktemp -d)"
+          trap 'kill "$PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+          (cd "$TMP" && "$OLDPWD/omnihook" up --port 18082 --data-dir "$TMP/data") &
+          PID=$!
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:18082/health && break || sleep 1; done
+          curl -sf http://127.0.0.1:18082/health | grep -q '"db":"up"'
+          curl -sf http://127.0.0.1:18082/ | grep -q OmniHook

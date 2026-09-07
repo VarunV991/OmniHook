@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/you/omnihook/internal/config"
 	"github.com/you/omnihook/internal/db"
@@ -20,11 +21,15 @@ func testHandler(t *testing.T, rps int) *Handler {
 	if err != nil {
 		t.Fatalf("db open: %v", err)
 	}
-	t.Cleanup(func() { _ = sqldb.Close() })
+	h := NewHandler(sqldb, cfg, NewHub())
+	t.Cleanup(func() {
+		h.Forwarder.Stop(0)
+		_ = sqldb.Close()
+	})
 	if _, err := sqldb.Exec(`INSERT INTO endpoints(slug) VALUES('rl')`); err != nil {
 		t.Fatal(err)
 	}
-	return NewHandler(sqldb, cfg, NewHub())
+	return h
 }
 
 func post(t *testing.T, h *Handler) int {
@@ -68,31 +73,39 @@ func TestRateLimitDisabled(t *testing.T) {
 
 func TestHubFansOutToAllSubscribers(t *testing.T) {
 	hub := NewHub()
-	a, unsubA := hub.Subscribe()
+	a, unsubA := hub.Subscribe("")
 	defer unsubA()
-	b, unsubB := hub.Subscribe()
+	b, unsubB := hub.Subscribe("")
 	defer unsubB()
-	hub.Broadcast("id-1")
-	hub.Broadcast("id-2")
-	for _, ch := range []chan string{a, b} {
+	f, unsubF := hub.Subscribe("other")
+	defer unsubF()
+	hub.Broadcast("ep", "id-1")
+	hub.Broadcast("ep", "id-2")
+	for _, ch := range []chan Event{a, b} {
 		for _, want := range []string{"id-1", "id-2"} {
 			select {
 			case got := <-ch:
-				if got != want {
-					t.Fatalf("got %q want %q", got, want)
+				if got.ID != want || got.Endpoint != "ep" {
+					t.Fatalf("got %+v want %q", got, want)
 				}
 			default:
 				t.Fatal("subscriber missed broadcast")
 			}
 		}
 	}
+	// Filtered subscriber to another endpoint gets nothing.
+	select {
+	case got := <-f:
+		t.Fatalf("filtered got %+v", got)
+	default:
+	}
 	// Unsubscribed client receives nothing further.
 	unsubB()
-	hub.Broadcast("id-3")
+	hub.Broadcast("ep", "id-3")
 	select {
 	case got := <-a:
-		if got != "id-3" {
-			t.Fatalf("got %q", got)
+		if got.ID != "id-3" {
+			t.Fatalf("got %+v", got)
 		}
 	default:
 		t.Fatal("remaining subscriber missed broadcast")
@@ -101,7 +114,45 @@ func TestHubFansOutToAllSubscribers(t *testing.T) {
 	// closed, so concurrent Broadcast can never panic on send-to-closed).
 	select {
 	case got := <-b:
-		t.Fatalf("unsubscribed got %q", got)
+		t.Fatalf("unsubscribed got %+v", got)
 	default:
+	}
+}
+
+// Marked incoming requests are captured as evidence but never re-forwarded
+// (loop breaker for replay-of-replay and endpoint cycles).
+func TestMarkedIncomingSkipsForward(t *testing.T) {
+	h := testHandler(t, 0)
+	if _, err := h.DB.Exec(`UPDATE endpoints SET target_url='http://127.0.0.1:1/x' WHERE slug='rl'`); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/hook/rl", strings.NewReader(`{"a":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Omnihook-Forward", "true")
+	rec := httptest.NewRecorder()
+	h.ServeHook(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("capture = %d", rec.Code)
+	}
+	h.Forwarder.Stop(2 * time.Second)
+	var n int
+	_ = h.DB.QueryRow(`SELECT COUNT(*) FROM replays`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("marked request was forwarded (%d attempts)", n)
+	}
+	if n := count(t, h); n != 1 {
+		t.Fatalf("marked request not stored (%d)", n)
+	}
+}
+
+func TestHubDropAccounting(t *testing.T) {
+	h := NewHub()
+	_, unsub := h.Subscribe("ep")
+	defer unsub()
+	for i := 0; i < 17; i++ {
+		h.Broadcast("ep", "id")
+	}
+	if got := h.DropCount(); got != 1 {
+		t.Fatalf("drops = %d, want 1", got)
 	}
 }
