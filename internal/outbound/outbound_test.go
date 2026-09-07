@@ -1,8 +1,11 @@
 package outbound
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,5 +90,58 @@ func TestBlockedRejectsUnsupportedTargets(t *testing.T) {
 		if !Blocked(target) {
 			t.Fatalf("expected rejected target: %s", target)
 		}
+	}
+}
+
+// Dial-time policy: mapped metadata IPs, Alibaba metadata, and DNS aliases
+// resolving to metadata are refused; rebinding between connections is
+// re-validated; localhost keeps working through the custom transport.
+func TestDialPolicy(t *testing.T) {
+	old := lookupIP
+	defer func() { lookupIP = old }()
+	md := net.ParseIP("169.254.169.254")
+	lo := net.ParseIP("127.0.0.1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Literal metadata IPs never dial (incl. mapped IPv6 + Alibaba range).
+	for _, addr := range []string{"[::ffff:169.254.169.254]:80", "169.254.169.254:80", "100.100.100.200:80"} {
+		if _, err := dialContext(ctx, "tcp", addr); err == nil {
+			t.Fatalf("metadata dial allowed: %s", addr)
+		}
+	}
+	// DNS alias to metadata refused without network access.
+	lookupIP = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: md}}, nil
+	}
+	if _, err := dialContext(ctx, "tcp", "evil.example:80"); err == nil {
+		t.Fatal("metadata DNS alias dial allowed")
+	}
+	// End-to-end through the policy transport: fake hostname answers
+	// localhost first (works), then rebinds to metadata (refused).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupIP = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: lo}}, nil
+	}
+	client := Client(5 * time.Second)
+	resp, err := client.Get("http://app.test:" + port + "/")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("localhost via policy transport: %v %v", resp, err)
+	}
+	resp.Body.Close()
+	lookupIP = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: md}}, nil
+	}
+	client2 := Client(5 * time.Second)
+	client2.Transport.(*http.Transport).DisableKeepAlives = true
+	if _, err := client2.Get("http://app.test:" + port + "/"); err == nil {
+		t.Fatal("rebound metadata dial allowed")
 	}
 }
