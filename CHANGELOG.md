@@ -5,6 +5,8 @@ All notable changes to OmniHook. Format follows Keep a Changelog; versions follo
 
 ## [Unreleased] (develop)
 
+## [v0.3.0] - 2026-09-07
+
 Added:
 - Adopted validation-tree advances: embedded versioned migrations (single
   schema source, legacy upgrade path, 0600 data files), cursor-correct
