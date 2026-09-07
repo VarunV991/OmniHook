@@ -2,7 +2,7 @@
 
 Capture, verify, replay webhooks locally. No account. Data stays in your SQLite file.
 
-> Latest tagged release: `v0.2.0`. This branch also contains unreleased review fixes; see [CHANGELOG.md](CHANGELOG.md). Start with [why it exists](docs/why.md), [architecture](docs/architecture.md), [a debugging session](docs/flow.md), or the [manual test guide](docs/MANUAL-TEST.md).
+> Latest tagged release: `v0.3.0`. Start with [why it exists](docs/why.md), [architecture](docs/architecture.md), [a debugging session](docs/flow.md), [storage & upgrades](docs/storage.md), or the [manual test guide](docs/MANUAL-TEST.md). Provider setup: [docs/PROVIDERS.md](docs/PROVIDERS.md). Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ## Why
 
@@ -174,4 +174,13 @@ go vet ./... && go test ./... && go build ./...
 ```
 
 Branching: `main` = releases, `develop` = integration, `feat/*` for work. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Docs
+
+- [Why OmniHook exists](docs/why.md) — the problem in concrete terms
+- [How OmniHook is built](docs/architecture.md) — pieces and data flow
+- [A webhook debugging session](docs/flow.md) — end-to-end walkthrough
+- [Storage, upgrades, and backups](docs/storage.md) — data, migrations, permissions
+- [Provider guides](docs/PROVIDERS.md) — per-provider setup and test results
+- [Manual test playbook](docs/MANUAL-TEST.md) — hands-on tour, per-OS
 
